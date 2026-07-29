@@ -4,13 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>陆空协同无人机系统地面站</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.5">
+  <link rel="stylesheet" href="/static/style.css?v=1.7">
 </head>
 <body>
   <header class="topbar">
     <div>
       <h1>陆空协同无人机系统地面站</h1>
-      <p>任务选择 · 双机通信 · 实时位置 · 飞行状态 · 安全降落</p>
     </div>
     <div class="header-status">
       <a class="header-action-btn" href="/settings" target="_blank" rel="noopener">设置</a>
@@ -25,7 +24,6 @@
         <div class="panel-title-row">
           <div>
             <h2>比赛场地实时位置</h2>
-            <p>场地坐标仍采用左下角为 (0,0)，X=0~400cm，Y=0~500cm；画面顺时针旋转 90°。</p>
           </div>
           <div class="map-actions">
             <button id="clearTrailBtn" class="btn btn-ghost btn-small">清空轨迹</button>
@@ -108,15 +106,30 @@
       </article>
 
       <article class="panel mission-strip">
-        <div class="mission-time-block">
-          <span>本轮任务计时</span>
-          <strong id="missionTimer">00:00.000</strong>
+        <div class="mission-overview-head">
+          <div>
+            <span class="overview-kicker">任务概览</span>
+            <strong id="missionTask">未选择</strong>
+          </div>
+          <span id="missionLock" class="mission-lock-badge unlocked">任务未锁定</span>
         </div>
         <div class="mission-summary">
-          <div><span>任务</span><strong id="missionTask">未选择</strong></div>
-          <div><span>运行编号</span><strong id="missionRun">--</strong></div>
-          <div><span>执行状态</span><strong id="missionStatus">空闲</strong></div>
-          <div><span>最后事件</span><strong id="lastEvent">--</strong></div>
+          <div>
+            <span>运行编号</span>
+            <strong id="missionRun">--</strong>
+          </div>
+          <div>
+            <span>执行状态</span>
+            <strong id="missionStatus" class="mission-status-text idle">空闲</strong>
+          </div>
+          <div>
+            <span>最后事件</span>
+            <strong id="lastEvent">--</strong>
+          </div>
+          <div>
+            <span>待确认命令</span>
+            <strong id="pendingCommands">0</strong>
+          </div>
         </div>
       </article>
     </section>
@@ -126,7 +139,7 @@
         <div class="panel-title-row compact">
           <div>
             <h2>任务控制</h2>
-            <p>准备命令同时发送：UAV BOOT + CAR MODE。</p>
+            <p>操作顺序：选择任务 → 准备双方 → START 小车。</p>
           </div>
         </div>
 
@@ -166,13 +179,9 @@
           </div>
         </div>
 
-        <div class="pending-row">
-          <span>待确认命令</span>
-          <strong id="pendingCommands">0</strong>
-        </div>
       </article>
 
-      <article class="panel device-panel">
+      <article class="panel device-panel uav-panel">
         <div class="device-header">
           <div>
             <span id="uavLinkDot" class="link-dot offline"></span>
@@ -196,7 +205,7 @@
         </div>
       </article>
 
-      <article class="panel device-panel">
+      <article class="panel device-panel car-panel">
         <div class="device-header">
           <div>
             <span id="carLinkDot" class="link-dot offline"></span>
@@ -233,6 +242,6 @@
   </main>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.5"></script>
+  <script src="/static/app.js?v=1.7"></script>
 </body>
 </html>
