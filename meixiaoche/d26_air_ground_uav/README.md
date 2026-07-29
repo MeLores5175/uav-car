@@ -27,6 +27,8 @@ d26_air_ground_uav/
 ├── scripts/car_udp_bridge.py          # 旧协议兼容，正式 launch 默认关闭
 ├── scripts/status_udp_sender.py       # 旧协议兼容，正式 launch 默认关闭
 ├── scripts/car_state_simulator.py
+├── scripts/real_flight_fake_car.py
+├── launch/d26_real_flight_virtual_car_drop_test.launch
 └── docs/INTERFACES.md
 ```
 
@@ -202,3 +204,28 @@ rostopic pub -1 /uav/land std_msgs/Bool "data: true"
 - 截获阶段使用 `car_position + car_velocity × intercept_prediction_s` 的预测位置，而不是追逐当前测量点。
 - 投放对准和等待执行 ACK 期间均使用投放出口偏置补偿；YAML 偏置表示投放出口相对无人机控制中心的位置，代码自动取反得到无人机中心目标。
 - 地面站只显示状态，不进入控制闭环；需要接收的信息见 `docs/GROUND_STATION_DATA.md`。
+
+## 真实无人机 + 虚拟小车的任务一测试
+
+不要直接把 `car_state_simulator.py` 用于实飞。请使用专用节点和 launch：
+
+```bash
+roslaunch d26_air_ground_uav \
+  d26_real_flight_virtual_car_drop_test.launch \
+  car_speed_ab:=0.08 \
+  car_speed_bc:=0.06 \
+  car_speed_cd:=0.08 \
+  car_speed_da:=0.06 \
+  car_telemetry_rate_hz:=30.0
+```
+
+
+四段速度分别对应 AB 直线、BC 半圆、CD 直线和 DA 半圆。`car_telemetry_rate_hz` 控制虚拟小车 `/car/state` 的发布频率；内部轨迹更新保持 100 Hz。
+
+确认定位和 H 点正常后，再执行：
+
+```bash
+rostopic pub -1 /fake_car/start_mission std_msgs/Bool "data: true"
+```
+
+该 launch 只用于任务一低速航迹验证：关闭真实小车 UDP、真实视觉和真实投放机构，使用虚拟小车、合成视觉和模拟投放 ACK。完整说明见 `docs/REAL_FLIGHT_FAKE_CAR_TEST.md`。

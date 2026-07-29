@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>d26_air_ground_uav</name>
+  <version>0.1.0</version>
+  <description>ROS1 mission control for the 2026 D air-ground cooperative UAV system.</description>
+  <maintainer email="nvidia@localhost">nvidia</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>rospy</depend>
+  <depend>rosgraph</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>tf</depend>
+
+  <export />
+</package>
