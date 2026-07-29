@@ -168,12 +168,42 @@ class UavUdpGateway:
         tcfg = pcfg.get("telemetry", {})
 
         self.proto = str(pcfg.get("version", "1.1"))
-        self.listen_ip = str(ucfg.get("listen_ip", "0.0.0.0"))
-        self.listen_port = int(ucfg.get("listen_port", 8888))
-        self.gs_addr = (str(gcfg.get("ip", "192.168.151.101")), int(gcfg.get("port", 8889)))
-        self.car_ip = str(ccfg.get("ip", "192.168.151.103"))
-        self.strict_source_ip = bool(pcfg.get("strict_source_ip", True))
-        self.allow_gs_direct_start = bool(pcfg.get("allow_gs_direct_start", False))
+        self.listen_ip = str(
+            rospy.get_param("~listen_ip", ucfg.get("listen_ip", "0.0.0.0"))
+        )
+        self.listen_port = int(
+            rospy.get_param("~listen_port", int(ucfg.get("listen_port", 8888)))
+        )
+        self.gs_addr = (
+            str(
+                rospy.get_param(
+                    "~ground_station_ip", gcfg.get("ip", "192.168.151.101")
+                )
+            ),
+            int(
+                rospy.get_param(
+                    "~ground_station_port", int(gcfg.get("port", 8889))
+                )
+            ),
+        )
+        self.car_ip = str(
+            rospy.get_param("~car_ip", ccfg.get("ip", "192.168.151.103"))
+        )
+        self.strict_source_ip = bool(
+            rospy.get_param(
+                "~strict_source_ip", bool(pcfg.get("strict_source_ip", True))
+            )
+        )
+        self.allow_gs_direct_start = bool(
+            rospy.get_param(
+                "~allow_gs_direct_start",
+                bool(pcfg.get("allow_gs_direct_start", False)),
+            )
+        )
+        self.car_telemetry_enabled = bool(
+            rospy.get_param("~car_telemetry_enabled", True)
+        )
+        self.forced_task = normalize_task(rospy.get_param("~forced_task", ""))
         self.allow_legacy = bool(pcfg.get("allow_legacy_format", True))
         self.command_result_timeout = safe_float(
             rcfg.get("command_result_timeout_s", 0.22), 0.22
@@ -195,7 +225,9 @@ class UavUdpGateway:
         self.transform = FieldTransform(pcfg.get("field_transform", {}))
         self.track = TrackProgressModel(pcfg.get("track", {}))
 
-        self.car_pub = rospy.Publisher("/car/state", String, queue_size=50)
+        self.car_pub = None
+        if self.car_telemetry_enabled:
+            self.car_pub = rospy.Publisher("/car/state", String, queue_size=50)
         self.car_event_pub = rospy.Publisher("/car/event", String, queue_size=20)
         self.command_pub = rospy.Publisher("/uav/mission_command", String, queue_size=10)
         self.mission_type_pub = rospy.Publisher("/uav/mission_type", String, queue_size=10)
@@ -232,13 +264,17 @@ class UavUdpGateway:
         self.command_results = {}
 
         rospy.logwarn(
-            "UDP V%s gateway listening %s:%d, GS=%s:%d, CAR=%s",
+            "UDP V%s gateway listening %s:%d, GS=%s:%d, CAR=%s, "
+            "GS_DIRECT_START=%s, CAR_TELEMETRY=%s, FORCED_TASK=%s",
             self.proto,
             self.listen_ip,
             self.listen_port,
             self.gs_addr[0],
             self.gs_addr[1],
             self.car_ip,
+            self.allow_gs_direct_start,
+            self.car_telemetry_enabled,
+            self.forced_task or "ANY",
         )
 
     def shutdown(self):
@@ -405,6 +441,10 @@ class UavUdpGateway:
                 task = normalize_task(args[0] if args else "")
                 if not task:
                     reply = self.err(cmd_id, action, "BAD_TASK")
+                elif self.forced_task and task != self.forced_task:
+                    reply = self.err(
+                        cmd_id, action, "MODE_MISMATCH", "FORCED_{}".format(self.forced_task)
+                    )
                 elif self.latest_status.get("mavros", {}).get("armed", False):
                     reply = self.err(cmd_id, action, "BUSY", "ARMED")
                 else:
@@ -424,6 +464,10 @@ class UavUdpGateway:
                 task = normalize_task(args[1] if len(args) >= 2 else self.boot_task)
                 if not task:
                     reply = self.err(cmd_id, action, "BAD_TASK")
+                elif self.forced_task and task != self.forced_task:
+                    reply = self.err(
+                        cmd_id, action, "MODE_MISMATCH", "FORCED_{}".format(self.forced_task)
+                    )
                 elif self.boot_state != "READY":
                     reply = self.err(cmd_id, action, "NOT_READY", "BOOT")
                 elif self.boot_task and task != self.boot_task:
@@ -481,6 +525,12 @@ class UavUdpGateway:
         self.send_text(reply, addr)
 
     def parse_car_telemetry(self, text, addr):
+        if not self.car_telemetry_enabled or self.car_pub is None:
+            rospy.logwarn_throttle(
+                2.0,
+                "TEL:CAR ignored because fake-car mode owns /car/state",
+            )
+            return
         role = self.source_role(addr)
         if self.strict_source_ip and role not in {"CAR", "DEBUG"}:
             return
@@ -604,7 +654,7 @@ class UavUdpGateway:
             return "SEARCH_CAR" if mission_type == "drop" else "APPROACH_CAR"
         if detail in {"FOLLOW_DROP", "FOLLOW_CD"}:
             return "FOLLOW" if mission_type == "drop" else "APPROACH_CAR"
-        if detail == "DROP_ALIGN":
+        if detail in {"DROP_DESCENT", "DROP_ALIGN"}:
             return "PREPARE_DROP"
         if detail == "DROP_WAIT_ACK":
             return "DROPPING"
