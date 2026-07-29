@@ -1,0 +1,6 @@
+V1.2 fixes
+- Mock UDP ports are exclusive on Windows. Old Mock processes can no longer steal commands.
+- start_demo.bat stops stale Python Mock processes on UDP 8888/8890.
+- start_demo.bat waits for mock_ready.flag before starting the ground station.
+- Mock console prints every received command (RX) and ACK/ERR reply (TX).
+- Task selection highlight is stronger and static files use cache-busting query strings.
