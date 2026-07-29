@@ -26,8 +26,8 @@ body {
 button { font: inherit; }
 
 .topbar {
-  min-height: 72px;
-  padding: 12px 22px;
+  min-height: 64px;
+  padding: 10px 20px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -55,7 +55,7 @@ button { font: inherit; }
   display: grid;
   grid-template-columns: minmax(640px, 1.65fr) minmax(390px, .95fr);
   gap: 14px;
-  min-height: calc(100vh - 72px);
+  min-height: calc(100vh - 64px);
 }
 .map-column, .side-column { min-width: 0; }
 .map-column { display: grid; gap: 14px; align-content: start; }
@@ -160,19 +160,65 @@ button { font: inherit; }
 
 .mission-strip {
   display: grid;
-  grid-template-columns: 210px 1fr;
+  grid-template-columns: minmax(180px, .72fr) minmax(0, 2.3fr);
   align-items: stretch;
   overflow: hidden;
 }
-.mission-time-block {
-  padding: 14px 18px;
+.mission-overview-head {
+  padding: 13px 16px;
   color: #fff;
   background: linear-gradient(135deg, #103f6d, #1b6fae);
-  display: flex; flex-direction: column; justify-content: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 9px;
 }
-.mission-time-block span { font-size: 12px; opacity: .78; }
-.mission-time-block strong { margin-top: 5px; font: 800 27px/1.1 Consolas, monospace; letter-spacing: .02em; }
-.mission-summary { padding: 10px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.overview-kicker {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  opacity: .72;
+}
+.mission-overview-head > div > strong {
+  display: block;
+  font-size: 20px;
+  line-height: 1.15;
+}
+.mission-lock-badge {
+  align-self: flex-start;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 900;
+  border: 1px solid rgba(255,255,255,.34);
+}
+.mission-lock-badge.unlocked {
+  color: #dbeeff;
+  background: rgba(255,255,255,.10);
+}
+.mission-lock-badge.locked {
+  color: #10466f;
+  background: #fff;
+}
+.mission-summary {
+  padding: 9px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 7px;
+  align-items: stretch;
+}
+.mission-summary > div {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.mission-status-text.running { color: #087846; }
+.mission-status-text.preparing { color: #9b6200; }
+.mission-status-text.done { color: #0d6a45; }
+.mission-status-text.danger { color: #b32027; }
+.mission-status-text.idle { color: #31485e; }
 
 .control-panel { padding-bottom: 12px; }
 .task-selector { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 12px 10px; }
@@ -246,7 +292,6 @@ button { font: inherit; }
   box-shadow: 0 3px 10px rgba(65,0,4,.35);
 }
 .land-slider-hint { margin-top: 6px; min-height: 16px; text-align: center; font-size: 11px; font-weight: 700; opacity: .9; }
-.pending-row { margin: 0 12px; padding: 8px 10px; border-radius: 7px; display: flex; justify-content: space-between; background: #fff8e8; color: #7c5913; font-size: 12px; }
 
 .device-panel { padding: 12px; }
 .device-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
@@ -321,4 +366,186 @@ button { font: inherit; }
 .header-action-btn:hover {
   background: rgba(255,255,255,.23);
   transform: translateY(-1px);
+}
+
+
+/* V1.6：紧凑大屏布局与信息层级优化 */
+.uav-panel {
+  border-top: 3px solid var(--uav);
+}
+.car-panel {
+  border-top: 3px solid var(--car);
+}
+.uav-panel .device-state-main {
+  border-left-color: var(--uav);
+  background: linear-gradient(135deg, #f4f9ff, #edf5fd);
+}
+.car-panel .device-state-main {
+  border-left-color: var(--car);
+  background: linear-gradient(135deg, #fff9f2, #fff4e8);
+}
+.car-panel .device-state-main strong {
+  color: #8a4b09;
+}
+.control-panel {
+  border-top: 3px solid var(--primary);
+}
+.log-panel {
+  border-top: 3px solid #66788b;
+}
+.map-panel {
+  border-top: 3px solid #1a4d77;
+}
+.map-readouts > div,
+.mission-summary > div,
+.data-grid > div {
+  transition: border-color .15s ease, background .15s ease;
+}
+.map-readouts > div:hover,
+.mission-summary > div:hover,
+.data-grid > div:hover {
+  background: #f0f6fb;
+  border-color: #c8d9e7;
+}
+#startBtn {
+  box-shadow: 0 5px 14px rgba(23, 131, 79, .18);
+}
+#resetBtn {
+  color: #5d6670;
+}
+.panel-title-row h2,
+.device-header strong {
+  letter-spacing: .01em;
+}
+
+@media (max-width: 760px) {
+  .mission-strip {
+    grid-template-columns: 1fr;
+  }
+  .mission-overview-head {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+}
+
+
+/* V1.7：恢复整页滚动，避免右侧日志被视口裁掉 */
+html {
+  overflow-y: auto;
+}
+
+body {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.topbar > div:first-child {
+  display: flex;
+  align-items: center;
+}
+
+.page-shell {
+  height: auto;
+  min-height: calc(100vh - 64px);
+  align-items: start;
+}
+
+.map-column,
+.side-column {
+  height: auto;
+  min-height: 0;
+}
+
+.map-panel,
+.log-panel {
+  overflow: visible;
+}
+
+.log-panel {
+  min-height: 260px;
+}
+
+.log-list {
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (min-width: 1181px) {
+  .page-shell {
+    padding: 10px;
+    gap: 10px;
+    grid-template-columns: minmax(680px, 1.72fr) minmax(430px, .92fr);
+  }
+
+  .map-column,
+  .side-column {
+    gap: 10px;
+    align-content: start;
+  }
+
+  .panel-title-row {
+    padding: 11px 13px 9px;
+  }
+
+  .map-stage {
+    margin-top: 0;
+  }
+
+  #fieldSvg {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 5 / 4;
+  }
+
+  .control-panel {
+    padding-bottom: 9px;
+  }
+
+  .task-selector {
+    padding: 0 10px 8px;
+  }
+
+  .task-option {
+    padding: 9px 10px;
+  }
+
+  .btn.full {
+    width: calc(100% - 20px);
+    margin: 0 10px 8px;
+  }
+
+  .control-grid {
+    padding: 0 10px 8px;
+  }
+
+  .emergency-wrap {
+    padding: 0 10px;
+  }
+
+  .land-slider-card {
+    padding: 9px 11px 8px;
+  }
+
+  .device-panel {
+    padding: 9px 10px;
+  }
+
+  .device-state-main {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+  }
+
+  .device-state-main strong {
+    font-size: 18px;
+  }
+
+  .data-grid {
+    gap: 5px;
+  }
+
+  .data-grid > div {
+    padding: 6px 7px;
+  }
 }

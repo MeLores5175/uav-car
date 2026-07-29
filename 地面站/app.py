@@ -80,7 +80,6 @@ class GroundStation:
             "mission": {
                 "run_id": "",
                 "status": "IDLE",
-                "start_epoch": None,
                 "last_event": "",
             },
             "uav": self._new_device_state("UAV"),
@@ -355,7 +354,7 @@ class GroundStation:
         elif event == "MISSION_START":
             run_id = params[0] if params else self.state["mission"].get("run_id", "")
             self.state["mission"].update(
-                {"run_id": run_id, "status": "RUNNING", "start_epoch": time.time()}
+                {"run_id": run_id, "status": "RUNNING"}
             )
         elif event == "CAR_POINT":
             if params:
@@ -373,7 +372,13 @@ class GroundStation:
         elif event == "UAV_LANDING":
             self.state["uav"]["telemetry"].update({"safety": "LANDING", "state": "LAND_HOME"})
         elif event == "UAV_LANDED":
-            self.state["uav"]["telemetry"].update({"safety": "LANDED", "armed": False, "z_cm": 0})
+            self.state["uav"]["telemetry"].update(
+                {"safety": "LANDED", "state": "LANDED", "armed": False, "z_cm": 0}
+            )
+            # LAND 属于任务中止。收到真实落地事件后结束 ABORTING 状态，
+            # 避免界面长期停留在“安全中止中”。
+            if str(self.state["mission"].get("status", "")).upper() == "ABORTING":
+                self.state["mission"]["status"] = "ABORTED"
         elif event == "MISSION_DONE":
             self.state["mission"]["status"] = "DONE"
 
@@ -451,8 +456,6 @@ class GroundStation:
 
     def build_snapshot(self) -> Dict[str, Any]:
         mission = dict(self.state["mission"])
-        start_epoch = mission.get("start_epoch")
-        mission["elapsed_ms"] = int((time.time() - start_epoch) * 1000) if start_epoch else 0
         return {
             "server_time": time.time(),
             "selected_task": self.state["selected_task"],
@@ -614,7 +617,7 @@ class GroundStation:
             )
         self.state["selected_task"] = task
         self.state["task_locked"] = True
-        self.state["mission"].update({"status": "PREPARING", "start_epoch": None, "last_event": ""})
+        self.state["mission"].update({"status": "PREPARING", "last_event": ""})
         self.state["uav"]["telemetry"].update({"boot": "STARTING", "state": "STARTING"})
         self.state["car"]["telemetry"].update({"task": 1 if task == "T1" else 2, "state": "PREPARING"})
         uav_id = self.send_command("uav", "BOOT", [task])
@@ -638,7 +641,7 @@ class GroundStation:
             return web.json_response({"ok": False, "error": "请先选择并准备任务"}, status=400)
         run_id = self.next_run_id()
         self.state["mission"].update(
-            {"run_id": run_id, "status": "STARTING", "start_epoch": time.time(), "last_event": ""}
+            {"run_id": run_id, "status": "STARTING", "last_event": ""}
         )
         cmd_id = self.send_command("car", "START", [run_id])
         self.add_log("EVENT", "GS", f"任务启动请求：{run_id} / {task}（仅发送给小车）")
@@ -657,7 +660,7 @@ class GroundStation:
         car_id = self.send_command("car", "RESET")
         self.state["selected_task"] = None
         self.state["task_locked"] = False
-        self.state["mission"].update({"run_id": "", "status": "IDLE", "start_epoch": None, "last_event": ""})
+        self.state["mission"].update({"run_id": "", "status": "IDLE", "last_event": ""})
         self.add_log("INFO", "GS", "已向无人机和小车发送 RESET，任务选择已解锁")
         return web.json_response({"ok": True, "uav_cmd_id": uav_id, "car_cmd_id": car_id})
 

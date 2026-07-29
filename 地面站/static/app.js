@@ -19,6 +19,8 @@ const ui = {
   carTrail: document.getElementById("carTrail"),
   toast: document.getElementById("toast"),
   logList: document.getElementById("logList"),
+  missionStatus: document.getElementById("missionStatus"),
+  missionLock: document.getElementById("missionLock"),
 };
 
 let selectedTask = "T1";
@@ -66,6 +68,7 @@ const stateLabels = {
   NORMAL: "正常",
   WARNING: "警告",
   ABORTING: "安全中止",
+  ABORTED: "任务已中止",
   LANDING: "受控降落",
   LANDED: "已落地",
   PREPARING: "准备中",
@@ -201,16 +204,35 @@ function renderTaskSelector() {
 
 function renderMission(data) {
   const mission = data.mission || {};
+  const status = String(mission.status || "IDLE").toUpperCase();
+
   setText("missionTask", taskText(data.selected_task));
   setText("missionRun", mission.run_id || "--");
-  setText("missionStatus", label(mission.status, "空闲"));
+  setText("missionStatus", label(status, "空闲"));
   setText("lastEvent", label(mission.last_event, "--"));
-  setText("missionTimer", formatDuration(mission.elapsed_ms || 0));
 
-  const status = String(mission.status || "").toUpperCase();
-  const running = ["STARTING", "RUNNING", "ABORTING"].includes(status);
-  ui.startBtn.disabled = running || !data.selected_task || !data.task_locked;
-  ui.prepareBtn.disabled = running || Boolean(data.task_locked);
+  if (ui.missionStatus) {
+    const statusClass =
+      ["RUNNING", "STARTING"].includes(status) ? "running" :
+      ["PREPARING"].includes(status) ? "preparing" :
+      ["DONE"].includes(status) ? "done" :
+      ["ABORTING", "ABORTED", "FAILED", "FAULT"].includes(status) ? "danger" :
+      "idle";
+    ui.missionStatus.className = `mission-status-text ${statusClass}`;
+  }
+
+  if (ui.missionLock) {
+    ui.missionLock.textContent = data.task_locked
+      ? `${taskText(data.selected_task)} 已锁定`
+      : "任务未锁定";
+    ui.missionLock.className = `mission-lock-badge ${data.task_locked ? "locked" : "unlocked"}`;
+  }
+
+  const active = ["STARTING", "RUNNING", "ABORTING"].includes(status);
+  const terminal = ["DONE", "ABORTED", "FAILED", "FAULT"].includes(status);
+  ui.startBtn.disabled =
+    active || terminal || !data.selected_task || !data.task_locked;
+  ui.prepareBtn.disabled = active || Boolean(data.task_locked);
 }
 
 function renderDevice(device, data) {
@@ -352,14 +374,6 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
-}
-
-function formatDuration(ms) {
-  const safe = Math.max(0, Number(ms) || 0);
-  const minutes = Math.floor(safe / 60000);
-  const seconds = Math.floor((safe % 60000) / 1000);
-  const millis = Math.floor(safe % 1000);
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
 }
 
 ui.taskOptions.forEach((button) => {
