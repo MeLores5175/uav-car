@@ -21,7 +21,7 @@ import rosgraph
 import rospy
 import yaml
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Bool, Float32, String
+from std_msgs.msg import Bool, String
 from tf.transformations import euler_from_quaternion
 
 
@@ -147,13 +147,42 @@ class RealFlightFakeCar:
         if self.mission_type not in {"drop", "dynamic_land"}:
             raise ValueError("mission_type must be drop or dynamic_land")
 
-        self.rate_hz = max(5.0, safe_float(rospy.get_param("~rate_hz", 30.0), 30.0))
-        self.max_speed = max(0.02, safe_float(rospy.get_param("~max_speed", 0.45), 0.45))
-        self.speed = clamp(
-            safe_float(rospy.get_param("~speed", 0.12), 0.12),
-            0.0,
-            self.max_speed,
+        self.max_speed = max(
+            0.02,
+            safe_float(rospy.get_param("~max_speed", 0.45), 0.45),
         )
+        self.segment_speeds = {
+            "AB": clamp(
+                safe_float(rospy.get_param("~speed_ab", 0.08), 0.08),
+                0.0,
+                self.max_speed,
+            ),
+            "BC": clamp(
+                safe_float(rospy.get_param("~speed_bc", 0.06), 0.06),
+                0.0,
+                self.max_speed,
+            ),
+            "CD": clamp(
+                safe_float(rospy.get_param("~speed_cd", 0.08), 0.08),
+                0.0,
+                self.max_speed,
+            ),
+            "DA": clamp(
+                safe_float(rospy.get_param("~speed_da", 0.06), 0.06),
+                0.0,
+                self.max_speed,
+            ),
+        }
+        self.telemetry_rate_hz = clamp(
+            safe_float(rospy.get_param("~telemetry_rate_hz", 30.0), 30.0),
+            1.0,
+            100.0,
+        )
+        requested_update_rate = max(
+            20.0,
+            safe_float(rospy.get_param("~update_rate_hz", 100.0), 100.0),
+        )
+        self.update_rate_hz = max(requested_update_rate, self.telemetry_rate_hz)
         self.path_s = clamp(
             safe_float(rospy.get_param("~start_path_s", 0.0), 0.0),
             0.0,
@@ -213,7 +242,6 @@ class RealFlightFakeCar:
         rospy.Subscriber("/fake_car/run", Bool, self.run_cb, queue_size=5)
         rospy.Subscriber("/fake_car/reset", Bool, self.reset_cb, queue_size=5)
         rospy.Subscriber("/fake_car/start_mission", Bool, self.start_mission_cb, queue_size=5)
-        rospy.Subscriber("/fake_car/speed", Float32, self.speed_cb, queue_size=5)
         rospy.Subscriber("/uav/mission_status", String, self.mission_status_cb, queue_size=20)
         rospy.Subscriber("/uav/platform_scan_enable", Bool, self.scan_cb, queue_size=5)
         rospy.Subscriber(
@@ -224,12 +252,19 @@ class RealFlightFakeCar:
         rospy.Timer(rospy.Duration(1.0), self.conflict_check_cb, oneshot=True)
 
         rospy.logwarn(
-            "Real-flight fake car ready: task=%s speed=%.2fm/s path=%.2fm fake_vision=%s. "
+            "Real-flight fake car ready: task=%s path=%.2fm fake_vision=%s telemetry=%.1fHz. "
             "It is STOPPED until /fake_car/run or /fake_car/start_mission.",
             self.mission_type,
-            self.speed,
             self.path_s,
             self.publish_fake_vision,
+            self.telemetry_rate_hz,
+        )
+        rospy.logwarn(
+            "Segment target speeds: AB=%.3f, BC=%.3f, CD=%.3f, DA=%.3fm/s",
+            self.segment_speeds["AB"],
+            self.segment_speeds["BC"],
+            self.segment_speeds["CD"],
+            self.segment_speeds["DA"],
         )
         rospy.logwarn(
             "Track calibration: A=(%.3f, %.3f)m relative H, AB yaw=%.1fdeg, total=%.3fm",
@@ -331,11 +366,6 @@ class RealFlightFakeCar:
             self.vision_stable_count = 0
         rospy.logwarn("Fake car reset to path_s=%.3fm and stopped", self.path_s)
 
-    def speed_cb(self, msg):
-        with self.lock:
-            self.speed = clamp(float(msg.data), 0.0, self.max_speed)
-        rospy.logwarn("Fake car speed set to %.3fm/s", self.speed)
-
     def start_mission_cb(self, msg):
         if not msg.data:
             return
@@ -364,10 +394,21 @@ class RealFlightFakeCar:
     def publish_start_once(self, _event):
         self.start_pub.publish(Bool(data=True))
 
+    def current_segment(self):
+        return self.track.map(self.path_s, 0.0)["segment"]
+
+    def current_target_speed(self):
+        return self.segment_speeds[self.current_segment()]
+
     def advance(self, dt):
-        if not self.running or self.speed <= 0.0:
+        if not self.running:
             return
-        next_s = self.path_s + self.speed * dt
+
+        target_speed = self.current_target_speed()
+        if target_speed <= 0.0:
+            return
+
+        next_s = self.path_s + target_speed * dt
         if next_s >= self.track.total:
             if self.loop_track:
                 next_s %= self.track.total
@@ -378,7 +419,7 @@ class RealFlightFakeCar:
         self.path_s = next_s
 
     def current_car(self):
-        effective_speed = self.speed if self.running else 0.0
+        effective_speed = self.current_target_speed() if self.running else 0.0
         return self.track.map(self.path_s, effective_speed)
 
     def publish_car_state(self, car, now):
@@ -392,6 +433,7 @@ class RealFlightFakeCar:
             "y": car["y"],
             "vx": car["vx"],
             "vy": car["vy"],
+            "target_speed_mps": self.current_target_speed() if self.running else 0.0,
             "yaw": car["yaw"],
             "segment": car["segment"],
             "segment_progress": car["segment_progress"],
@@ -455,7 +497,9 @@ class RealFlightFakeCar:
         payload = {
             "stamp": now.to_sec(),
             "running": self.running,
-            "speed_mps": self.speed,
+            "current_target_speed_mps": self.current_target_speed(),
+            "segment_speeds_mps": dict(self.segment_speeds),
+            "telemetry_rate_hz": self.telemetry_rate_hz,
             "path_s_m": self.path_s,
             "track_total_m": self.track.total,
             "segment": car["segment"],
@@ -472,21 +516,26 @@ class RealFlightFakeCar:
         )
 
     def spin(self):
-        rate = rospy.Rate(self.rate_hz)
+        rate = rospy.Rate(self.update_rate_hz)
         last = rospy.Time.now()
         last_status = rospy.Time(0)
+        telemetry_accumulator = 1.0 / self.telemetry_rate_hz
+        telemetry_period = 1.0 / self.telemetry_rate_hz
 
         while not rospy.is_shutdown():
             now = rospy.Time.now()
             dt = clamp((now - last).to_sec(), 0.0, 0.10)
             last = now
+            telemetry_accumulator += dt
 
             with self.lock:
                 self.advance(dt)
                 car = self.current_car()
 
-            self.publish_car_state(car, now)
-            self.publish_synthetic_vision(car, now)
+            if telemetry_accumulator >= telemetry_period:
+                self.publish_car_state(car, now)
+                self.publish_synthetic_vision(car, now)
+                telemetry_accumulator %= telemetry_period
 
             if (now - last_status).to_sec() >= 0.5:
                 self.publish_status(car, now)

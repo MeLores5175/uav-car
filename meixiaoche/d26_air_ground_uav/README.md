@@ -210,8 +210,17 @@ rostopic pub -1 /uav/land std_msgs/Bool "data: true"
 不要直接把 `car_state_simulator.py` 用于实飞。请使用专用节点和 launch：
 
 ```bash
-roslaunch d26_air_ground_uav d26_real_flight_virtual_car_drop_test.launch car_speed:=0.12
+roslaunch d26_air_ground_uav \
+  d26_real_flight_virtual_car_drop_test.launch \
+  car_speed_ab:=0.08 \
+  car_speed_bc:=0.06 \
+  car_speed_cd:=0.08 \
+  car_speed_da:=0.06 \
+  car_telemetry_rate_hz:=30.0
 ```
+
+
+四段速度分别对应 AB 直线、BC 半圆、CD 直线和 DA 半圆。`car_telemetry_rate_hz` 控制虚拟小车 `/car/state` 的发布频率；内部轨迹更新保持 100 Hz。
 
 确认定位和 H 点正常后，再执行：
 

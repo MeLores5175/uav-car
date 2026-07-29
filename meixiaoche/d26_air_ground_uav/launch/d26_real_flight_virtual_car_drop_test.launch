@@ -10,7 +10,11 @@
   -->
 
   <arg name="mission_yaml" default="$(find d26_air_ground_uav)/config/air_ground_mission.yaml" />
-  <arg name="car_speed" default="0.12" />
+  <arg name="car_speed_ab" default="0.08" />
+  <arg name="car_speed_bc" default="0.06" />
+  <arg name="car_speed_cd" default="0.08" />
+  <arg name="car_speed_da" default="0.06" />
+  <arg name="car_telemetry_rate_hz" default="30.0" />
   <arg name="start_path_s" default="0.0" />
 
   <arg name="start_mavros" default="true" />
@@ -42,7 +46,12 @@
         required="true">
     <param name="mission_yaml" value="$(arg mission_yaml)" />
     <param name="mission_type" value="drop" />
-    <param name="speed" value="$(arg car_speed)" />
+    <param name="speed_ab" value="$(arg car_speed_ab)" />
+    <param name="speed_bc" value="$(arg car_speed_bc)" />
+    <param name="speed_cd" value="$(arg car_speed_cd)" />
+    <param name="speed_da" value="$(arg car_speed_da)" />
+    <param name="telemetry_rate_hz" value="$(arg car_telemetry_rate_hz)" />
+    <param name="update_rate_hz" value="100.0" />
     <param name="start_path_s" value="$(arg start_path_s)" />
     <param name="loop_track" value="false" />
     <param name="auto_run_on_intercept" value="true" />
