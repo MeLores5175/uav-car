@@ -12,7 +12,7 @@ mission:
 
   takeoff:
     cruise_height_m: 1.50            # 相对 H 点地面的巡航高度
-    yaw_deg: 0.0
+    yaw_deg: 0.0                    # 全任务固定航向；跟随和半圆伴飞均不使用小车 yaw
     xy_tolerance_m: 0.18
     z_tolerance_m: 0.10
     speed_tolerance_mps: 0.20
@@ -43,9 +43,6 @@ mission:
     max_vertical_accel_mps2: 0.60
     intercept_prediction_s: 0.60
     follow_prediction_s: 0.18
-    yaw_mode: car                    # car 或 fixed
-    fixed_yaw_deg: 0.0
-    max_yaw_rate_deg_s: 80.0
 
     acquire_position_error_m: 0.20
     acquire_relative_speed_mps: 0.18
@@ -58,7 +55,6 @@ mission:
   estimator:
     telemetry_timeout_s: 0.50
     vision_timeout_s: 0.35
-    odometry_timeout_s: 0.40
     telemetry_position_alpha: 0.45
     telemetry_velocity_alpha: 0.65
     vision_position_alpha: 0.72
@@ -85,6 +81,7 @@ mission:
     align_position_error_m: 0.075
     align_relative_speed_mps: 0.075
     align_stable_time_s: 0.45
+    align_timeout_s: 1.00            # 精确瞄准超过 1.0 秒且仍在窗口内时直接投放
     fall_time_s: 0.58               # 含自由落体、舵机与通信延迟后的初值
     predicted_error_limit_m: 0.085
     vision_required: true
@@ -114,7 +111,6 @@ mission:
     pause_position_error_m: 0.14
     pause_relative_speed_mps: 0.12
 
-    vision_hold_timeout_s: 0.22
     vision_abort_timeout_s: 0.60
     reacquire_climb_m: 0.28
 
@@ -141,16 +137,12 @@ mission:
     position_tolerance_m: 0.16
     speed_tolerance_mps: 0.18
     stable_time_s: 0.45
-    use_auto_land: true
     auto_land_prepare_s: 0.60
     auto_land_timeout_s: 15.0
 
   safety:
-    car_loss_hold_s: 0.35
     car_loss_return_s: 1.20
     odometry_loss_auto_land_s: 0.70
-    battery_voltage_min: 0.0         # 0 表示暂不启用；接入电池消息后可设置
-    require_reset_after_abort: true
 
 vision:
   camera_index: 0

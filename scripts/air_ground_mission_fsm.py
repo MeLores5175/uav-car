@@ -41,14 +41,6 @@ def norm3(x, y, z):
     return math.sqrt(x * x + y * y + z * z)
 
 
-def wrap_pi(angle):
-    while angle > math.pi:
-        angle -= 2.0 * math.pi
-    while angle < -math.pi:
-        angle += 2.0 * math.pi
-    return angle
-
-
 def limit_xy(x, y, maximum):
     length = norm2(x, y)
     if length <= maximum or length < 1e-9:
@@ -194,11 +186,10 @@ class AirGroundMissionFSM:
         )
 
         self.cruise_height = safe_float(self.takeoff_cfg.get("cruise_height_m", 1.50), 1.50)
-        self.takeoff_yaw = math.radians(safe_float(self.takeoff_cfg.get("yaw_deg", 0.0), 0.0))
+        self.fixed_yaw = math.radians(safe_float(self.takeoff_cfg.get("yaw_deg", 0.0), 0.0))
 
         self.telemetry_timeout = safe_float(self.est_cfg.get("telemetry_timeout_s", 0.50), 0.50)
         self.vision_timeout = safe_float(self.est_cfg.get("vision_timeout_s", 0.35), 0.35)
-        self.odom_timeout = safe_float(self.est_cfg.get("odometry_timeout_s", 0.40), 0.40)
         self.telemetry_position_alpha = safe_float(
             self.est_cfg.get("telemetry_position_alpha", 0.45), 0.45
         )
@@ -228,7 +219,6 @@ class AirGroundMissionFSM:
         self.current_vel = [0.0, 0.0, 0.0]
         self.current_yaw = 0.0
         self.last_pose_rx = None
-        self.last_vel_rx = None
         self.range_m = None
         self.last_range_rx = None
 
@@ -256,12 +246,10 @@ class AirGroundMissionFSM:
         self.run_id = "R000"
         self.mission_start_time = None
         self.mission_result = "IDLE"
-        self.start_requested = False
         self.reset_required = False
 
         self.fsm_state = "WAIT_START"
         self.state_enter_time = rospy.Time.now()
-        self.stable_since = None
         self.follow_stable_since = None
         self.drop_stable_since = None
         self.touchdown_since = None
@@ -283,8 +271,6 @@ class AirGroundMissionFSM:
 
         self.cmd_xy = [0.0, 0.0]
         self.cmd_vz = 0.0
-        self.commanded_yaw = self.takeoff_yaw
-        self.last_control_time = rospy.Time.now()
 
         self.landing_target_z = None
         self.landing_attempts = 0
@@ -395,7 +381,6 @@ class AirGroundMissionFSM:
             self.abort_reason = "unexpected disarm during %s" % self.fsm_state
             self.mission_result = "ABORTED_UNEXPECTED_DISARM"
             self.reset_required = True
-            self.start_requested = False
             self.enter_state("WAIT_RESET")
             return
 
@@ -422,7 +407,6 @@ class AirGroundMissionFSM:
             self.home_z = msg.pose.position.z
             self.home_yaw = self.current_yaw
             self.home_ready = True
-            self.commanded_yaw = self.takeoff_yaw
             rospy.logwarn(
                 "Home captured: x=%.3f y=%.3f z=%.3f yaw=%.1fdeg",
                 self.home_x, self.home_y, self.home_z, math.degrees(self.home_yaw)
@@ -434,7 +418,6 @@ class AirGroundMissionFSM:
             msg.twist.linear.y,
             msg.twist.linear.z,
         ]
-        self.last_vel_rx = rospy.Time.now()
 
     def range_cb(self, msg):
         value = safe_float(msg.range, -1.0)
@@ -571,7 +554,6 @@ class AirGroundMissionFSM:
             self.fsm_state in {"PLATFORM_DISARM", "PLATFORM_DWELL", "PLATFORM_TAKEOFF"}
             and not self.current_state.armed
         ):
-            self.start_requested = False
             self.reset_required = True
             self.expected_disarm = False
             self.mission_result = "ABORTED_LANDED_ON_CAR"
@@ -600,7 +582,6 @@ class AirGroundMissionFSM:
             return
         self.clear_runtime()
         self.reset_required = False
-        self.start_requested = False
         self.mission_result = "IDLE"
         self.safety_state = "IDLE"
         self.abort_reason = ""
@@ -625,12 +606,10 @@ class AirGroundMissionFSM:
             self.mission_id = int(rospy.Time.now().to_sec())
         if self.run_id == "R000":
             self.run_id = "R%d" % self.mission_id
-        self.start_requested = True
         self.mission_start_time = rospy.Time.now()
         self.mission_result = "RUNNING"
         self.safety_state = "NORMAL"
         self.wait_fcu_prestream_start = rospy.Time.now()
-        self.commanded_yaw = self.takeoff_yaw
         self.enter_state("WAIT_FCU")
         self.publish_event_once("MISSION_START")
         rospy.logwarn(
@@ -645,7 +624,6 @@ class AirGroundMissionFSM:
         self.last_processed_vision_version = -1
         self.cmd_xy = [0.0, 0.0]
         self.cmd_vz = 0.0
-        self.stable_since = None
         self.follow_stable_since = None
         self.drop_stable_since = None
         self.touchdown_since = None
@@ -677,7 +655,6 @@ class AirGroundMissionFSM:
             rospy.logwarn("FSM: %s -> %s", self.fsm_state, new_state)
         self.fsm_state = new_state
         self.state_enter_time = rospy.Time.now()
-        self.stable_since = None
         # 每次切换任务状态都重新累计伴飞稳定时间，避免上一状态的计时直接穿透。
         self.follow_stable_since = None
         if new_state != "DROP_ALIGN":
@@ -767,12 +744,6 @@ class AirGroundMissionFSM:
         if self.extended_state_received:
             return self.extended_state.landed_state == ExtendedState.LANDED_STATE_ON_GROUND
         return False
-
-    def current_xyz(self):
-        if self.current_pose is None:
-            return None
-        p = self.current_pose.pose.position
-        return p.x, p.y, p.z
 
     def pose_age(self):
         if self.last_pose_rx is None:
@@ -901,7 +872,7 @@ class AirGroundMissionFSM:
         else:
             result.update({
                 "yaw": math.atan2(result["vy"], result["vx"])
-                if norm2(result["vx"], result["vy"]) > 0.03 else self.commanded_yaw,
+                if norm2(result["vx"], result["vy"]) > 0.03 else self.fixed_yaw,
                 "segment": str(self.car_data.get("segment", "UNKNOWN")).upper(),
                 "segment_progress": safe_float(self.car_data.get("segment_progress", -1.0)),
                 "running": bool(self.car_data.get("running", True)),
@@ -909,25 +880,7 @@ class AirGroundMissionFSM:
         self.car_estimate = result
         return deepcopy(result)
 
-    def target_yaw_for_car(self, car):
-        """返回当前控制模式期望的最终航向，不改变航向限速器状态。"""
-        mode = str(self.follow_cfg.get("yaw_mode", "car")).strip().lower()
-        if mode == "car" and car is not None:
-            return safe_float(car.get("yaw", self.commanded_yaw), self.commanded_yaw)
-        return math.radians(
-            safe_float(self.follow_cfg.get("fixed_yaw_deg", 0.0), 0.0)
-        )
-
-    def desired_yaw(self, car, dt):
-        target = self.target_yaw_for_car(car)
-        max_rate = math.radians(
-            safe_float(self.follow_cfg.get("max_yaw_rate_deg_s", 80.0), 80.0)
-        )
-        delta = clamp(wrap_pi(target - self.commanded_yaw), -max_rate * dt, max_rate * dt)
-        self.commanded_yaw = wrap_pi(self.commanded_yaw + delta)
-        return self.commanded_yaw
-
-    def drop_uav_center_offset(self, car):
+    def drop_uav_center_offset(self):
         """
         根据投放装置相对无人机控制中心的位置，计算无人机中心应施加的补偿。
 
@@ -944,14 +897,15 @@ class AirGroundMissionFSM:
             release_local_x = release_x
             release_local_y = release_y
         else:
-            yaw = self.target_yaw_for_car(car)
+            yaw = self.fixed_yaw
             release_local_x = math.cos(yaw) * release_x - math.sin(yaw) * release_y
             release_local_y = math.sin(yaw) * release_x + math.cos(yaw) * release_y
 
         return -release_local_x, -release_local_y
 
     def car_target_xy(self, car):
-        yaw = safe_float(car.get("yaw", 0.0), 0.0)
+        # 跟随偏置始终按任务固定航向解释，小车 yaw 不参与目标位置计算。
+        yaw = self.fixed_yaw
         forward_offset = safe_float(self.follow_cfg.get("offset_forward_m", 0.0), 0.0)
         left_offset = safe_float(self.follow_cfg.get("offset_left_m", 0.0), 0.0)
         tx = (
@@ -1003,7 +957,7 @@ class AirGroundMissionFSM:
         )
         self.cmd_vz += clamp(desired_vz - self.cmd_vz, -max_az * dt, max_az * dt)
 
-        yaw = self.desired_yaw(car, dt)
+        yaw = self.fixed_yaw
         self.publish_position_velocity_yaw(
             tx, ty, target_z,
             self.cmd_xy[0], self.cmd_xy[1], self.cmd_vz,
@@ -1042,7 +996,7 @@ class AirGroundMissionFSM:
         desired_vz = clamp(z_kp * (tz - p.z), -max_vz, max_vz)
         max_az = safe_float(self.follow_cfg.get("max_vertical_accel_mps2", 0.60), 0.60)
         self.cmd_vz += clamp(desired_vz - self.cmd_vz, -max_az * dt, max_az * dt)
-        yaw = self.desired_yaw(None, dt)
+        yaw = self.fixed_yaw
         self.publish_position_velocity_yaw(
             tx, ty, tz, self.cmd_xy[0], self.cmd_xy[1], self.cmd_vz, yaw
         )
@@ -1090,6 +1044,19 @@ class AirGroundMissionFSM:
             stable_time,
         )
 
+    def start_drop_action(self, trigger_reason):
+        """统一启动一次投放动作，避免正常瞄准与超时强投逻辑重复。"""
+        self.drop_action_id += 1
+        self.drop_retry_count = 0
+        self.drop_ack_success = False
+        self.drop_ack_text = ""
+        rospy.logwarn(
+            "Drop action triggered: reason=%s action_id=%d",
+            str(trigger_reason), self.drop_action_id,
+        )
+        self.send_drop_command()
+        self.enter_state("DROP_WAIT_ACK")
+
     def send_drop_command(self):
         payload = {
             "cmd": str(self.drop_cfg.get("command", "R1")),
@@ -1122,7 +1089,6 @@ class AirGroundMissionFSM:
         self.abort_reason = str(reason)
         self.mission_result = "ABORTED"
         self.safety_state = "EMERGENCY_LAND"
-        self.start_requested = False
         self.expected_disarm = True
         self.auto_land_prepare_start = rospy.Time.now()
         self.auto_land_start = None
@@ -1212,7 +1178,7 @@ class AirGroundMissionFSM:
         if car is None:
             self.publish_position_velocity_yaw(
                 self.home_x, self.home_y, self.home_z + self.cruise_height,
-                0.0, 0.0, 0.0, self.commanded_yaw,
+                0.0, 0.0, 0.0, self.fixed_yaw,
             )
             return
         metrics = self.publish_follow_control(
@@ -1245,18 +1211,27 @@ class AirGroundMissionFSM:
         )
         if car is None:
             return
-        drop_offset = self.drop_uav_center_offset(car)
+        drop_offset = self.drop_uav_center_offset()
         metrics = self.publish_follow_control(
             car, self.home_z + self.cruise_height, dt,
             target_offset_xy=drop_offset,
         )
         segment = self.drop_cfg.get("segment_name", "CD")
         end = safe_float(self.drop_cfg.get("window_end", 0.78), 0.78)
-        if (
-            str(car.get("segment", "")).upper() != str(segment).upper() or
-            safe_float(car.get("segment_progress", -1.0)) > end
-        ):
-            self.enter_return_home("DROP_ALIGN_WINDOW_LOST")
+        car_segment = str(car.get("segment", "")).upper()
+        segment_progress = safe_float(car.get("segment_progress", -1.0))
+
+        # 离开 C-D 后禁止投放；仍在 C-D 但到达窗口末端时直接投放，
+        # 保留当前任务的最后兜底，不再通过额外配置开关控制。
+        if car_segment != str(segment).upper():
+            self.enter_return_home("DROP_ALIGN_SEGMENT_LOST")
+            return
+        if segment_progress > end:
+            rospy.logwarn(
+                "Drop alignment window deadline reached at progress=%.3f: force drop.",
+                segment_progress,
+            )
+            self.start_drop_action("ALIGN_WINDOW_DEADLINE_FORCE_DROP")
             return
 
         lead = safe_float(self.drop_cfg.get("fall_time_s", 0.58), 0.58)
@@ -1282,12 +1257,22 @@ class AirGroundMissionFSM:
             safe_float(self.drop_cfg.get("align_stable_time_s", 0.45), 0.45),
         )
         if ready:
-            self.drop_action_id += 1
-            self.drop_retry_count = 0
-            self.drop_ack_success = False
-            self.drop_ack_text = ""
-            self.send_drop_command()
-            self.enter_state("DROP_WAIT_ACK")
+            self.start_drop_action("ALIGN_READY")
+            return
+
+        # 精确瞄准超时后直接投放。上方已确认仍处于 C-D 且未超过窗口末端。
+        align_timeout = safe_float(self.drop_cfg.get("align_timeout_s", 1.00), 1.00)
+        if align_timeout > 0.0 and self.state_elapsed() >= align_timeout:
+            rospy.logwarn(
+                "Drop alignment timeout %.2fs: force drop in valid window; "
+                "pos_err=%.3f rel_speed=%.3f predicted_err=%.3f vision=%s",
+                align_timeout,
+                metrics["position_error"],
+                metrics["relative_speed"],
+                predicted_error,
+                vision_ok,
+            )
+            self.start_drop_action("ALIGN_TIMEOUT_FORCE_DROP")
 
     def handle_drop_wait_ack(self, dt):
         car = self.update_car_estimator(
@@ -1505,13 +1490,13 @@ class AirGroundMissionFSM:
         self.enter_state("PLATFORM_DWELL")
         self.mission_result = "LANDED_ON_CAR"
 
-    def handle_platform_dwell(self, dt):
+    def handle_platform_dwell(self):
         car = self.update_car_estimator(0.0)
         platform_z = self.home_z + safe_float(
             self.land_cfg.get("platform_height_m", 0.34), 0.34
         )
         if car is not None:
-            yaw = self.desired_yaw(car, dt)
+            yaw = self.fixed_yaw
             tx, ty = self.car_target_xy(car)
             self.publish_position_velocity_yaw(
                 tx, ty, platform_z, car["vx"], car["vy"], 0.0, yaw
@@ -1615,7 +1600,6 @@ class AirGroundMissionFSM:
                 self.request_arm(False)
                 return
             self.expected_disarm = False
-            self.start_requested = False
             self.reset_required = True
             if emergency:
                 self.mission_result = "ABORTED_LANDED"
@@ -1829,7 +1813,7 @@ class AirGroundMissionFSM:
                 target_z = self.home_z + self.cruise_height
                 self.publish_position_velocity_yaw(
                     self.home_x, self.home_y, target_z,
-                    0.0, 0.0, 0.0, self.takeoff_yaw,
+                    0.0, 0.0, 0.0, self.fixed_yaw,
                 )
                 if self.wait_fcu_prestream_start is None:
                     self.wait_fcu_prestream_start = now
@@ -1877,7 +1861,7 @@ class AirGroundMissionFSM:
                 self.handle_platform_disarm(dt)
 
             elif self.fsm_state == "PLATFORM_DWELL":
-                self.handle_platform_dwell(dt)
+                self.handle_platform_dwell()
 
             elif self.fsm_state == "PLATFORM_TAKEOFF":
                 self.handle_platform_takeoff(dt)
