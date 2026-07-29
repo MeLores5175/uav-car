@@ -1,4 +1,5 @@
 #include "vehicle_sim.h"
+#include "mission_config.h"
 
 void VehicleSim::begin()
 {
@@ -32,9 +33,15 @@ float VehicleSim::lag(float current,
 WheelState VehicleSim::update(const WheelState& target, float dtSeconds)
 {
     wheels_.leftSpeedCmS =
-        lag(wheels_.leftSpeedCmS, target.leftSpeedCmS, 0.15f, dtSeconds);
+        lag(wheels_.leftSpeedCmS,
+            target.leftSpeedCmS,
+            CarConfig::SIM_WHEEL_TIME_CONSTANT_S,
+            dtSeconds);
     wheels_.rightSpeedCmS =
-        lag(wheels_.rightSpeedCmS, target.rightSpeedCmS, 0.15f, dtSeconds);
+        lag(wheels_.rightSpeedCmS,
+            target.rightSpeedCmS,
+            CarConfig::SIM_WHEEL_TIME_CONSTANT_S,
+            dtSeconds);
     return wheels_;
 }
 

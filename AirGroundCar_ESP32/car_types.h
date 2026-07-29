@@ -32,20 +32,38 @@ enum class DriveBackendType : uint8_t {
     STEPPER
 };
 
+// 后轮轴中心 O 的车体速度命令。
 struct MotionCommand {
     float linearCmS;
     float angularRadS;
 };
 
+// 左右后轮各自的线速度。
 struct WheelState {
     float leftSpeedCmS;
     float rightSpeedCmS;
 };
 
+// 二维位姿。odometry 内部保存的是后轮轴中心 O 的位姿。
 struct Pose2D {
     float xCm;
     float yCm;
     float yawRad;
+};
+
+// 板中心 P 的参考位置和参考速度。
+struct BoardReference {
+    float xCm;
+    float yCm;
+    float vxCmS;
+    float vyCmS;
+};
+
+// 建模阶段串口输出的一条弧线参数样本。
+struct ArcSample {
+    float progress01;
+    float leftSpeedCmS;
+    float rightSpeedCmS;
 };
 
 struct MissionProfile {
