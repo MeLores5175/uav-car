@@ -2,12 +2,18 @@
 
 namespace CarConfig {
 
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* WIFI_SSID = "TP-LINK_B592";
+const char* WIFI_PASSWORD = "dsnbdsnb789";
 
-const IPAddress GS_IP(192, 168, 151, 101);
-const IPAddress UAV_IP(192, 168, 151, 102);
-const IPAddress CAR_IP(192, 168, 151, 103);
+// 地面站当前 config.json 使用的小车地址为 192.168.77.103:8890。
+// ESP32 必须真正配置该静态地址，不能只声明 CAR_IP 后继续使用 DHCP。
+const IPAddress GS_IP(192, 168, 77, 104);      // 仅作为首次收到命令前的回退地址
+const IPAddress UAV_IP(192, 168, 168, 101);
+const IPAddress CAR_IP(192, 168, 77, 103);
+const IPAddress WIFI_GATEWAY(192, 168, 77, 1);
+const IPAddress WIFI_SUBNET(255, 255, 255, 0);
+const IPAddress WIFI_DNS1(192, 168, 77, 1);
+const IPAddress WIFI_DNS2(8, 8, 8, 8);
 
 }  // namespace CarConfig
 

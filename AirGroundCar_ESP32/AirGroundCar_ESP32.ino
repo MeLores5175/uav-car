@@ -19,17 +19,31 @@ Telemetry telemetry;
 uint32_t lastControlMs = 0;
 uint32_t lastTelemetryMs = 0;
 uint32_t lastHeartbeatMs = 0;
+uint32_t lastArcRecordMs = 0;
 uint32_t heartbeatSequence = 0;
 MissionState previousMissionState = MissionState::IDLE;
+
+// 配置中的 A 点是板中心坐标，里程计内部保存的是后轮轴中心坐标。
+static void resetOdometryToStart()
+{
+    const float yaw = CarConfig::START_YAW_RAD;
+    const float rearX =
+        CarConfig::START_BOARD_X_CM -
+        CarConfig::BOARD_TO_REAR_CM * cosf(yaw);
+    const float rearY =
+        CarConfig::START_BOARD_Y_CM -
+        CarConfig::BOARD_TO_REAR_CM * sinf(yaw);
+
+    odometry.reset(rearX, rearY, yaw);
+}
 
 static void resetMotionModules()
 {
     routeController.reset();
     speedPlanner.reset();
     driveBackend.reset();
-    odometry.reset(CarConfig::START_X_CM,
-                   CarConfig::START_Y_CM,
-                   CarConfig::START_YAW_RAD);
+    resetOdometryToStart();
+    lastArcRecordMs = 0;
 }
 
 static void handleMissionStateChange()
@@ -41,9 +55,13 @@ static void handleMissionStateChange()
 
     if (current == MissionState::RUNNING) {
         resetMotionModules();
-        routeController.start(odometry.distanceCm());
+        routeController.start();
         udpComm.notifyMissionStarted(missionManager);
         Serial.println("[MISSION] running");
+        if (CarConfig::ARC_MODEL_GENERATION_MODE) {
+            Serial.println(
+                "ARC_SAMPLE_FORMAT,segment,progress01,left_cm_s,right_cm_s");
+        }
     } else if (current == MissionState::IDLE) {
         resetMotionModules();
         Serial.println("[MISSION] reset to idle");
@@ -135,6 +153,30 @@ static void updateLocalStartButton()
     previousPressed = pressed;
 }
 
+static void recordArcSample(uint32_t nowMs, const WheelState& target)
+{
+    if (!CarConfig::ARC_MODEL_GENERATION_MODE) {
+        return;
+    }
+
+    const RouteSegment segment = routeController.segment();
+    const bool inArc =
+        segment == RouteSegment::ARC_BC ||
+        segment == RouteSegment::ARC_DA;
+
+    if (!inArc ||
+        nowMs - lastArcRecordMs < CarConfig::ARC_RECORD_PERIOD_MS) {
+        return;
+    }
+
+    lastArcRecordMs = nowMs;
+    Serial.printf("ARC_SAMPLE,%u,%.5f,%.4f,%.4f\n",
+                  (unsigned)segment,
+                  routeController.segmentProgress01(),
+                  target.leftSpeedCmS,
+                  target.rightSpeedCmS);
+}
+
 void setup()
 {
     Serial.begin(115200);
@@ -149,9 +191,8 @@ void setup()
         : DriveBackendType::STEPPER;
     driveBackend.begin(backendType);
 
-    odometry.begin(CarConfig::START_X_CM,
-                   CarConfig::START_Y_CM,
-                   CarConfig::START_YAW_RAD);
+    odometry.begin(0.0f, 0.0f, 0.0f);
+    resetOdometryToStart();
     telemetry.begin();
     udpComm.begin();
 
@@ -165,11 +206,15 @@ void setup()
     lastHeartbeatMs = lastControlMs;
 
     Serial.println();
-    Serial.println("AirGroundCar ESP32 initial architecture");
+    Serial.println("AirGroundCar ESP32 board-center modeling version");
     Serial.println("1=T1, 2=T2, A=arm, S=local start, 0=reset, P=status");
     Serial.println(CarConfig::USE_SIMULATION
         ? "backend=SIMULATION"
         : "backend=STEPPER (driver is still a stub)");
+    Serial.printf("start board=(%.2f, %.2f), rear offset=%.2f cm\n",
+                  CarConfig::START_BOARD_X_CM,
+                  CarConfig::START_BOARD_Y_CM,
+                  CarConfig::BOARD_TO_REAR_CM);
 }
 
 void loop()
@@ -188,9 +233,14 @@ void loop()
 
         MotionCommand requested{0.0f, 0.0f};
         if (missionManager.isRunning()) {
+            const Pose2D boardPose =
+                odometry.boardPose(CarConfig::BOARD_TO_REAR_CM);
+
             requested = routeController.update(
-                odometry.distanceCm(),
-                missionManager.profile());
+                odometry.pose(),
+                boardPose,
+                missionManager.profile(),
+                dtSeconds);
         }
 
         const MotionCommand planned = speedPlanner.update(
@@ -200,6 +250,9 @@ void loop()
 
         const WheelState target = speedPlanner.wheelTarget(
             CarConfig::WHEEL_TRACK_CM);
+
+        recordArcSample(nowMs, target);
+
         const WheelState actual = driveBackend.update(target, dtSeconds);
 
         odometry.update(actual.leftSpeedCmS,
@@ -215,7 +268,10 @@ void loop()
 
         if (missionManager.isRunning() &&
             routeController.isComplete() &&
-            fabsf(planned.linearCmS) < 0.05f) {
+            routeController.boardErrorCm() <=
+                CarConfig::ROUTE_COMPLETE_POSITION_TOLERANCE_CM &&
+            fabsf(planned.linearCmS) < 0.05f &&
+            fabsf(planned.angularRadS) < 0.005f) {
             missionManager.finish();
         }
     }

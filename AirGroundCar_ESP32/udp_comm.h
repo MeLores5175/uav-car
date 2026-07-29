@@ -25,6 +25,12 @@ private:
     bool statusRequested_ = false;
     uint32_t carCommandSequence_ = 1000;
 
+    // 收到地面站命令后，记住实际来源地址。
+    // 后续 HB/TEL/EVT 均发回这个地址，避免电脑 DHCP 地址变化导致“ACK 能收到、遥测收不到”。
+    IPAddress groundStationIp_;
+    uint16_t groundStationPort_ = 0;
+    bool groundStationKnown_ = false;
+
     void updateWifi();
     void receivePackets(MissionManager& mission);
     void handleCommand(const String& packet,
@@ -35,6 +41,7 @@ private:
     void reply(const IPAddress& ip,
                uint16_t port,
                const String& message);
+    void rememberGroundStation(const IPAddress& ip, uint16_t port);
     static String tokenAt(const String& text, int index);
 };
 

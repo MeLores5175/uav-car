@@ -8,9 +8,22 @@ void UdpComm::begin()
         return;
     }
 
+    WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.setAutoReconnect(true);
+
+    const bool staticIpOk = WiFi.config(CarConfig::CAR_IP,
+                                        CarConfig::WIFI_GATEWAY,
+                                        CarConfig::WIFI_SUBNET,
+                                        CarConfig::WIFI_DNS1,
+                                        CarConfig::WIFI_DNS2);
+    Serial.printf("[UDP] static IP %s: %s\n",
+                  CarConfig::CAR_IP.toString().c_str(),
+                  staticIpOk ? "configured" : "FAILED");
+
     WiFi.begin(CarConfig::WIFI_SSID, CarConfig::WIFI_PASSWORD);
-    Serial.println("[UDP] Wi-Fi connecting...");
+    Serial.printf("[UDP] Wi-Fi connecting to %s...\n", CarConfig::WIFI_SSID);
 }
 
 void UdpComm::update(MissionManager& mission)
@@ -38,7 +51,11 @@ bool UdpComm::consumeStatusRequest()
 void UdpComm::updateWifi()
 {
     if (WiFi.status() != WL_CONNECTED) {
-        udpStarted_ = false;
+        if (udpStarted_) {
+            udp_.stop();
+            udpStarted_ = false;
+            Serial.println("[UDP] Wi-Fi disconnected, UDP socket stopped");
+        }
         return;
     }
 
@@ -84,6 +101,10 @@ void UdpComm::handleCommand(const String& packet,
         reply(remoteIp, remotePort, "ERR:0000:UNKNOWN:BAD_FORMAT");
         return;
     }
+
+    // 地面站的发送 socket 固定绑定在 8889，但电脑 IP 可能由 DHCP 分配。
+    // 只要收到合法 CMD，就把后续异步遥测和事件发回实际来源端点。
+    rememberGroundStation(remoteIp, remotePort);
 
     const String cmdId = tokenAt(packet, 1);
     const String action = tokenAt(packet, 2);
@@ -137,16 +158,52 @@ void UdpComm::handleCommand(const String& packet,
     }
 
     if (action == "START") {
+        const String runId = tokenAt(packet, 3);
+
         if (!CarConfig::ALLOW_REMOTE_START) {
             reply(remoteIp, remotePort,
                   "ERR:" + cmdId +
                   ":START:LOCAL_BUTTON_REQUIRED");
-        } else if (mission.remoteStart()) {
+            return;
+        }
+
+        if (runId.length() == 0) {
+            reply(remoteIp, remotePort,
+                  "ERR:" + cmdId + ":START:MISSING_RUN_ID");
+            return;
+        }
+
+        // 地面站当前直接发送 START。
+        // 在仿真模式下，收到 START 后自动完成 ARM。
+        if (mission.state() == MissionState::READY) {
+            if (!mission.arm(runId)) {
+                reply(remoteIp, remotePort,
+                      "ERR:" + cmdId + ":START:ARM_FAILED");
+                return;
+            }
+        }
+
+        // 兼容地面站命令重发：
+        // 同一个 run_id 已经运行时，再次回复成功，但不重复启动。
+        if (mission.state() == MissionState::RUNNING &&
+            mission.runId() == runId) {
+            reply(remoteIp, remotePort,
+                  "ACK:" + cmdId + ":START:OK:" + runId);
+            return;
+        }
+
+        if (mission.state() != MissionState::ARMED) {
+            reply(remoteIp, remotePort,
+                  "ERR:" + cmdId + ":START:NOT_READY");
+            return;
+        }
+
+        if (mission.remoteStart()) {
             reply(remoteIp, remotePort,
                   "ACK:" + cmdId + ":START:OK:" + mission.runId());
         } else {
             reply(remoteIp, remotePort,
-                  "ERR:" + cmdId + ":START:NOT_READY");
+                  "ERR:" + cmdId + ":START:FAILED");
         }
         return;
     }
@@ -177,13 +234,29 @@ void UdpComm::reply(const IPAddress& ip,
 
 void UdpComm::sendToGroundStation(const String& message)
 {
-    Serial.println(message);
+    if (groundStationKnown_) {
+        reply(groundStationIp_, groundStationPort_, message);
+        return;
+    }
+
+    // 上电后、尚未收到地面站命令前使用配置中的回退地址。
     reply(CarConfig::GS_IP, CarConfig::GS_PORT, message);
+}
+
+void UdpComm::rememberGroundStation(const IPAddress& ip, uint16_t port)
+{
+    if (!groundStationKnown_ || !(groundStationIp_ == ip) || groundStationPort_ != port) {
+        groundStationIp_ = ip;
+        groundStationPort_ = port;
+        groundStationKnown_ = true;
+        Serial.printf("[UDP] ground station learned: %s:%u\n",
+                      groundStationIp_.toString().c_str(),
+                      groundStationPort_);
+    }
 }
 
 void UdpComm::sendToUav(const String& message)
 {
-    Serial.println(message);
     reply(CarConfig::UAV_IP, CarConfig::UAV_PORT, message);
 }
 

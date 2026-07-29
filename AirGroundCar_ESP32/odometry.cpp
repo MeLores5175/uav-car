@@ -10,6 +10,8 @@ void Odometry::reset(float xCm, float yCm, float yawRad)
 {
     pose_ = {xCm, yCm, yawRad};
     distanceCm_ = 0.0f;
+    leftDistanceCm_ = 0.0f;
+    rightDistanceCm_ = 0.0f;
 }
 
 float Odometry::normalize(float angleRad)
@@ -41,7 +43,10 @@ void Odometry::update(float leftSpeedCmS,
     pose_.xCm += linear * cosf(midYaw) * dtSeconds;
     pose_.yCm += linear * sinf(midYaw) * dtSeconds;
     pose_.yawRad = normalize(pose_.yawRad + deltaYaw);
+
     distanceCm_ += fabsf(linear) * dtSeconds;
+    leftDistanceCm_ += fabsf(leftSpeedCmS) * dtSeconds;
+    rightDistanceCm_ += fabsf(rightSpeedCmS) * dtSeconds;
 }
 
 const Pose2D& Odometry::pose() const
@@ -49,7 +54,26 @@ const Pose2D& Odometry::pose() const
     return pose_;
 }
 
+Pose2D Odometry::boardPose(float boardToRearCm) const
+{
+    Pose2D board;
+    board.xCm = pose_.xCm + boardToRearCm * cosf(pose_.yawRad);
+    board.yCm = pose_.yCm + boardToRearCm * sinf(pose_.yawRad);
+    board.yawRad = pose_.yawRad;
+    return board;
+}
+
 float Odometry::distanceCm() const
 {
     return distanceCm_;
+}
+
+float Odometry::leftDistanceCm() const
+{
+    return leftDistanceCm_;
+}
+
+float Odometry::rightDistanceCm() const
+{
+    return rightDistanceCm_;
 }
