@@ -656,6 +656,10 @@ class PlatformVisionNode:
         self.predictor = TargetPredictor(
             float(rospy.get_param("~visual_predictor_max_speed_mps", 1.0))
         )
+        self.last_predictor_measurement_stamp = {
+            "YOLO": None,
+            "APRILTAG": None,
+        }
 
         self.fps_value = 0.0
         self.fps_frames = 0
@@ -733,6 +737,10 @@ class PlatformVisionNode:
                 self.source_stable_count = 0
                 self.tag_good_count = 0
                 self.predictor.reset()
+                self.last_predictor_measurement_stamp = {
+                    "YOLO": None,
+                    "APRILTAG": None,
+                }
 
     def mode_cb(self, msg):
         self.explicit_mode = normalize_mode(msg.data)
@@ -1181,6 +1189,9 @@ class PlatformVisionNode:
             not predicted
             and selected.get("local_position_valid", False)
         ):
+            measurement_stamp = safe_float(
+                selected.get("stamp", capture_stamp), capture_stamp
+            )
             alpha = (
                 0.78
                 if source == "APRILTAG"
@@ -1191,12 +1202,17 @@ class PlatformVisionNode:
                 0.40,
                 1.0,
             )
-            self.predictor.update(
-                selected["target_x_local"],
-                selected["target_y_local"],
-                capture_stamp,
-                alpha,
-            )
+            if (
+                self.last_predictor_measurement_stamp.get(source)
+                != measurement_stamp
+            ):
+                self.predictor.update(
+                    selected["target_x_local"],
+                    selected["target_y_local"],
+                    measurement_stamp,
+                    alpha,
+                )
+                self.last_predictor_measurement_stamp[source] = measurement_stamp
 
         confidence = safe_float(selected.get("confidence", 0.0))
         stable_required = (

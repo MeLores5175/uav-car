@@ -73,6 +73,137 @@ def safe_int(value, default=0):
         return int(default)
 
 
+FOLLOW_VELOCITY_PROFILE_NAMES = (
+    "intercept",
+    "follow",
+    "drop_descent",
+    "drop_align",
+)
+
+FOLLOW_VELOCITY_PROFILE_FIELDS = (
+    "velocity_feedforward_gain",
+    "position_kp",
+    "relative_velocity_kd",
+    "max_horizontal_speed_mps",
+    "max_correction_speed_mps",
+    "max_horizontal_accel_mps2",
+    "max_horizontal_jerk_mps3",
+)
+
+
+def load_follow_velocity_profiles(follow_cfg):
+    if not isinstance(follow_cfg, dict):
+        raise ValueError("mission.follow must be a mapping")
+    profiles_cfg = follow_cfg.get("velocity_profiles")
+    if not isinstance(profiles_cfg, dict):
+        raise ValueError("mission.follow.velocity_profiles must be a mapping")
+
+    profiles = {}
+    for profile_name in FOLLOW_VELOCITY_PROFILE_NAMES:
+        source = profiles_cfg.get(profile_name)
+        if not isinstance(source, dict):
+            raise ValueError(
+                "mission.follow.velocity_profiles.%s must be a mapping"
+                % profile_name
+            )
+
+        profile = {}
+        for field_name in FOLLOW_VELOCITY_PROFILE_FIELDS:
+            if field_name not in source:
+                raise ValueError(
+                    "missing mission.follow.velocity_profiles.%s.%s"
+                    % (profile_name, field_name)
+                )
+            value = source[field_name]
+            if isinstance(value, bool):
+                raise ValueError(
+                    "%s.%s must be a finite number"
+                    % (profile_name, field_name)
+                )
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "%s.%s must be a finite number"
+                    % (profile_name, field_name)
+                )
+            if not math.isfinite(number):
+                raise ValueError(
+                    "%s.%s must be a finite number"
+                    % (profile_name, field_name)
+                )
+            profile[field_name] = number
+
+        for field_name in (
+            "velocity_feedforward_gain",
+            "position_kp",
+            "relative_velocity_kd",
+        ):
+            if profile[field_name] < 0.0:
+                raise ValueError(
+                    "%s.%s must be non-negative"
+                    % (profile_name, field_name)
+                )
+
+        for field_name in (
+            "max_horizontal_speed_mps",
+            "max_correction_speed_mps",
+            "max_horizontal_accel_mps2",
+            "max_horizontal_jerk_mps3",
+        ):
+            if profile[field_name] <= 0.0:
+                raise ValueError(
+                    "%s.%s must be greater than zero"
+                    % (profile_name, field_name)
+                )
+
+        if (
+            profile["max_correction_speed_mps"]
+            > profile["max_horizontal_speed_mps"]
+        ):
+            raise ValueError(
+                "%s.max_correction_speed_mps cannot exceed "
+                "max_horizontal_speed_mps" % profile_name
+            )
+        profiles[profile_name] = profile
+
+    return profiles
+
+
+def calculate_follow_xy_velocity(
+    profile, car_vx, car_vy, ex, ey, evx, evy
+):
+    ff_gain = profile["velocity_feedforward_gain"]
+    kp = profile["position_kp"]
+    kd = profile["relative_velocity_kd"]
+
+    raw_correction_vx = kp * ex + kd * evx
+    raw_correction_vy = kp * ey + kd * evy
+    correction_vx, correction_vy = limit_xy(
+        raw_correction_vx,
+        raw_correction_vy,
+        profile["max_correction_speed_mps"],
+    )
+
+    prelimit_vx = ff_gain * car_vx + correction_vx
+    prelimit_vy = ff_gain * car_vy + correction_vy
+    desired_vx, desired_vy = limit_xy(
+        prelimit_vx,
+        prelimit_vy,
+        profile["max_horizontal_speed_mps"],
+    )
+    return {
+        "raw_correction_vx": raw_correction_vx,
+        "raw_correction_vy": raw_correction_vy,
+        "correction_vx": correction_vx,
+        "correction_vy": correction_vy,
+        "prelimit_vx": prelimit_vx,
+        "prelimit_vy": prelimit_vy,
+        "desired_vx": desired_vx,
+        "desired_vy": desired_vy,
+    }
+
+
 class AlphaBetaTracker:
     """二维匀速目标跟踪器，融合小车里程位置与下视视觉位置。"""
 
@@ -162,6 +293,13 @@ class AirGroundMissionFSM:
         self.takeoff_cfg = self.mission_cfg.get("takeoff", {})
         self.fcu_cfg = self.mission_cfg.get("fcu", {})
         self.follow_cfg = self.mission_cfg.get("follow", {})
+        try:
+            self.follow_velocity_profiles = load_follow_velocity_profiles(
+                self.follow_cfg
+            )
+        except ValueError as exc:
+            rospy.logfatal("Invalid follow velocity profiles: %s", str(exc))
+            raise
         self.est_cfg = self.mission_cfg.get("estimator", {})
         self.drop_cfg = self.mission_cfg.get("drop", {})
         self.land_cfg = self.mission_cfg.get("dynamic_landing", {})
@@ -1081,10 +1219,11 @@ class AirGroundMissionFSM:
         )
         return tx, ty
 
-    def publish_follow_control(
+    def publish_dynamic_follow_control(
         self, car, target_z, dt, speed_scale=1.0, target_offset_xy=None,
         max_vz_override=None, max_az_override=None
     ):
+        """动态降落专用：保持PX4位置环+小车速度前馈的原控制行为。"""
         if self.current_pose is None:
             return None
         p = self.current_pose.pose.position
@@ -1098,20 +1237,8 @@ class AirGroundMissionFSM:
         evy = car["vy"] - self.current_vel[1]
 
         ff = safe_float(self.follow_cfg.get("velocity_feedforward_gain", 1.0), 1.0)
-        velocity_mode = str(
-            self.follow_cfg.get("velocity_setpoint_mode", "feedforward_only")
-        ).strip().lower()
-        if velocity_mode == "legacy_outer_pd":
-            kp = safe_float(self.follow_cfg.get("position_kp", 0.95), 0.95)
-            kd = safe_float(self.follow_cfg.get("relative_velocity_kd", 0.35), 0.35)
-            desired_vx = ff * car["vx"] + kp * ex + kd * evx
-            desired_vy = ff * car["vy"] + kp * ey + kd * evy
-        else:
-            # PositionTarget 同时携带目标位置和速度时，PX4 会用位置误差闭环，
-            # 速度字段应只作为移动目标前馈，避免外层 P/D 与 PX4 内环重复控制。
-            desired_vx = ff * car["vx"]
-            desired_vy = ff * car["vy"]
-
+        desired_vx = ff * car["vx"]
+        desired_vy = ff * car["vy"]
         max_speed = safe_float(
             self.follow_cfg.get("max_horizontal_speed_mps", 1.20), 1.20
         ) * speed_scale
@@ -1169,9 +1296,124 @@ class AirGroundMissionFSM:
         self.last_follow_metrics_time = rospy.Time.now()
         return metrics
 
+    def publish_drop_follow_control(
+        self, car, target_z, dt, profile_name, target_offset_xy=None,
+        max_vz_override=None, max_az_override=None
+    ):
+        """投掷任务专用：ROS前馈+PD外环计算并发布完整XY速度。"""
+        if self.current_pose is None:
+            return None
+        p = self.current_pose.pose.position
+        tx, ty = self.car_target_xy(car)
+        if target_offset_xy is not None:
+            tx += safe_float(target_offset_xy[0], 0.0)
+            ty += safe_float(target_offset_xy[1], 0.0)
+        ex = tx - p.x
+        ey = ty - p.y
+        evx = car["vx"] - self.current_vel[0]
+        evy = car["vy"] - self.current_vel[1]
+
+        profile = self.follow_velocity_profiles[profile_name]
+        control = calculate_follow_xy_velocity(
+            profile,
+            car["vx"],
+            car["vy"],
+            ex,
+            ey,
+            evx,
+            evy,
+        )
+
+        previous_cmd_xy = list(self.cmd_xy)
+        self.update_xy_command(
+            control["desired_vx"],
+            control["desired_vy"],
+            dt,
+            profile["max_horizontal_accel_mps2"],
+            profile["max_horizontal_jerk_mps3"],
+        )
+        limited_vx, limited_vy = limit_xy(
+            self.cmd_xy[0],
+            self.cmd_xy[1],
+            profile["max_horizontal_speed_mps"],
+        )
+        self.cmd_xy = [limited_vx, limited_vy]
+        dt_eff = max(float(dt), 0.01)
+        self.cmd_acc_xy = [
+            (self.cmd_xy[0] - previous_cmd_xy[0]) / dt_eff,
+            (self.cmd_xy[1] - previous_cmd_xy[1]) / dt_eff,
+        ]
+
+        z_error = target_z - p.z
+        z_kp = safe_float(self.follow_cfg.get("vertical_kp", 0.90), 0.90)
+        max_vz = (
+            safe_float(max_vz_override, 0.45)
+            if max_vz_override is not None
+            else safe_float(self.follow_cfg.get("max_vertical_speed_mps", 0.45), 0.45)
+        )
+        desired_vz = clamp(z_kp * z_error, -max_vz, max_vz)
+        max_az = (
+            safe_float(max_az_override, 0.60)
+            if max_az_override is not None
+            else safe_float(self.follow_cfg.get("max_vertical_accel_mps2", 0.60), 0.60)
+        )
+        self.cmd_vz += clamp(desired_vz - self.cmd_vz, -max_az * dt, max_az * dt)
+
+        self.publish_velocity_yaw(
+            self.cmd_xy[0],
+            self.cmd_xy[1],
+            self.cmd_vz,
+            self.fixed_yaw,
+        )
+
+        measured_speed = norm2(self.current_vel[0], self.current_vel[1])
+        if measured_speed > profile["max_horizontal_speed_mps"] + 0.05:
+            rospy.logwarn_throttle(
+                1.0,
+                "Measured XY speed %.3f exceeds %s command limit %.3f",
+                measured_speed,
+                profile_name,
+                profile["max_horizontal_speed_mps"],
+            )
+
+        metrics = {
+            "target_x": tx,
+            "target_y": ty,
+            "position_error": norm2(ex, ey),
+            "relative_speed": norm2(evx, evy),
+            "ex": ex,
+            "ey": ey,
+            "evx": evx,
+            "evy": evy,
+            "target_offset_x": safe_float(target_offset_xy[0], 0.0)
+                if target_offset_xy is not None else 0.0,
+            "target_offset_y": safe_float(target_offset_xy[1], 0.0)
+                if target_offset_xy is not None else 0.0,
+            "command_vx": self.cmd_xy[0],
+            "command_vy": self.cmd_xy[1],
+            "command_ax": self.cmd_acc_xy[0],
+            "command_ay": self.cmd_acc_xy[1],
+            "prediction_model": car.get("prediction_model", "unknown"),
+            "prediction_s": car.get("prediction_s", 0.0),
+            "control_profile": profile_name,
+            "raw_correction_vx": control["raw_correction_vx"],
+            "raw_correction_vy": control["raw_correction_vy"],
+            "correction_vx": control["correction_vx"],
+            "correction_vy": control["correction_vy"],
+            "prelimit_total_vx": control["prelimit_vx"],
+            "prelimit_total_vy": control["prelimit_vy"],
+            "desired_vx": control["desired_vx"],
+            "desired_vy": control["desired_vy"],
+            "measured_horizontal_speed": measured_speed,
+            "command_speed_limit": profile["max_horizontal_speed_mps"],
+        }
+        self.last_follow_metrics = deepcopy(metrics)
+        self.last_follow_metrics_time = rospy.Time.now()
+        return metrics
+
     def publish_point_control(
         self, tx, ty, tz, dt, max_speed, max_accel, kp,
-        max_jerk=None, max_vz=None, max_az=None
+        max_jerk=None, max_vz=None, max_az=None, vertical_kp=None
     ):
         if self.current_pose is None:
             return None
@@ -1186,7 +1428,11 @@ class AirGroundMissionFSM:
         self.update_xy_command(
             desired_vx, desired_vy, dt, max_accel, jerk_limit
         )
-        z_kp = safe_float(self.follow_cfg.get("vertical_kp", 0.90), 0.90)
+        z_kp = (
+            safe_float(vertical_kp, 0.90)
+            if vertical_kp is not None
+            else safe_float(self.follow_cfg.get("vertical_kp", 0.90), 0.90)
+        )
         vz_limit = safe_float(
             max_vz,
             safe_float(self.follow_cfg.get("max_vertical_speed_mps", 0.45), 0.45),
@@ -1313,14 +1559,45 @@ class AirGroundMissionFSM:
         self.home_stable_since = None
         self.enter_state("RETURN_HOME")
 
-    def handle_takeoff(self, dt):
+    def publish_takeoff_point_control(self, dt):
         target_z = self.home_z + self.cruise_height
-        metrics = self.publish_point_control(
-            self.home_x, self.home_y, target_z, dt,
-            safe_float(self.follow_cfg.get("max_horizontal_speed_mps", 1.2), 1.2),
-            safe_float(self.follow_cfg.get("max_horizontal_accel_mps2", 0.8), 0.8),
-            0.9,
+        return self.publish_point_control(
+            self.home_x,
+            self.home_y,
+            target_z,
+            dt,
+            safe_float(
+                self.takeoff_cfg.get("max_horizontal_speed_mps", 0.35),
+                0.35,
+            ),
+            safe_float(
+                self.takeoff_cfg.get("max_horizontal_accel_mps2", 0.35),
+                0.35,
+            ),
+            safe_float(
+                self.takeoff_cfg.get("horizontal_position_kp", 0.80),
+                0.80,
+            ),
+            max_jerk=safe_float(
+                self.takeoff_cfg.get("max_horizontal_jerk_mps3", 0.60),
+                0.60,
+            ),
+            max_vz=safe_float(
+                self.takeoff_cfg.get("max_vertical_speed_mps", 0.55),
+                0.55,
+            ),
+            max_az=safe_float(
+                self.takeoff_cfg.get("max_vertical_accel_mps2", 0.75),
+                0.75,
+            ),
+            vertical_kp=safe_float(
+                self.takeoff_cfg.get("vertical_position_kp", 0.90),
+                0.90,
+            ),
         )
+
+    def handle_takeoff(self, dt):
+        metrics = self.publish_takeoff_point_control(dt)
         self.try_offboard_and_arm(allow_arm=True)
         if metrics is None:
             return
@@ -1331,7 +1608,7 @@ class AirGroundMissionFSM:
             speed <= safe_float(self.takeoff_cfg.get("speed_tolerance_mps", 0.20), 0.20)
         )
         # 任务一的规则：第一次满足位置+高度+速度阈值，就立刻开始3秒悬停计时；
-        # 进入悬停后即使稳定条件暂时丢失，3秒到点仍然继续截获，不重新计时。
+        # 3秒后若宽松安全门槛未满足则继续悬停；门槛恢复后立即截获，不重新计时。
         if self.mission_type == "drop":
             if stable:
                 self.drop_hover_started_by_stable = True
@@ -1376,6 +1653,50 @@ class AirGroundMissionFSM:
             else:
                 self.request_emergency_land("takeoff timeout")
 
+    def handle_drop_hover(self, dt):
+        metrics = self.publish_takeoff_point_control(dt)
+        if metrics is None:
+            return
+        required_hover = safe_float(
+            self.takeoff_cfg.get("drop_hover_time_s", 3.0), 3.0
+        )
+        if self.state_elapsed() < required_hover:
+            return
+
+        xy_err, z_err, speed = metrics
+        exit_safe = (
+            xy_err <= safe_float(
+                self.takeoff_cfg.get(
+                    "hover_exit_xy_tolerance_m", 0.30
+                ),
+                0.30,
+            )
+            and z_err <= safe_float(
+                self.takeoff_cfg.get(
+                    "hover_exit_z_tolerance_m", 0.18
+                ),
+                0.18,
+            )
+            and speed <= safe_float(
+                self.takeoff_cfg.get(
+                    "hover_exit_speed_tolerance_mps", 0.35
+                ),
+                0.35,
+            )
+        )
+        if exit_safe:
+            self.enter_state("INTERCEPT")
+            return
+
+        rospy.logwarn_throttle(
+            1.0,
+            "Task1 hover timer done; wait for safe intercept exit: "
+            "xy_err=%.2f z_err=%.2f speed=%.2f",
+            xy_err,
+            z_err,
+            speed,
+        )
+
     def handle_intercept(self, dt):
         # 截获阶段不追逐小车当前点，而是追逐“当前估计位置 + 速度×预测时间”。
         # update_car_estimator() 返回的 x/y 已经是 prediction_s 秒后的预测坐标。
@@ -1389,8 +1710,8 @@ class AirGroundMissionFSM:
                 0.0, 0.0, 0.0, self.fixed_yaw,
             )
             return
-        metrics = self.publish_follow_control(
-            car, self.home_z + self.cruise_height, dt, speed_scale=1.0
+        metrics = self.publish_drop_follow_control(
+            car, self.home_z + self.cruise_height, dt, "intercept"
         )
         if self.follow_is_stable(metrics, strict=False):
             self.enter_state("FOLLOW_DROP" if self.mission_type == "drop" else "FOLLOW_CD")
@@ -1401,7 +1722,9 @@ class AirGroundMissionFSM:
         )
         if car is None:
             return
-        metrics = self.publish_follow_control(car, self.home_z + self.cruise_height, dt)
+        metrics = self.publish_drop_follow_control(
+            car, self.home_z + self.cruise_height, dt, "follow"
+        )
         segment = self.drop_cfg.get("segment_name", "CD")
         descent_start = safe_float(
             self.drop_cfg.get("descent_window_start", 0.05), 0.05
@@ -1506,13 +1829,11 @@ class AirGroundMissionFSM:
             )
             self.drop_target_z = max(final_z, self.drop_target_z - rate * dt)
 
-        metrics = self.publish_follow_control(
+        metrics = self.publish_drop_follow_control(
             car,
             self.drop_target_z,
             dt,
-            speed_scale=safe_float(
-                self.drop_cfg.get("descent_horizontal_speed_scale", 0.75), 0.75
-            ),
+            "drop_descent",
             target_offset_xy=drop_offset,
         )
 
@@ -1550,8 +1871,8 @@ class AirGroundMissionFSM:
         if car is None:
             return
         drop_offset = self.drop_uav_center_offset()
-        metrics = self.publish_follow_control(
-            car, self.drop_final_target_z(), dt,
+        metrics = self.publish_drop_follow_control(
+            car, self.drop_final_target_z(), dt, "drop_align",
             target_offset_xy=drop_offset,
         )
         segment = self.drop_cfg.get("segment_name", "CD")
@@ -1617,8 +1938,8 @@ class AirGroundMissionFSM:
             safe_float(self.follow_cfg.get("follow_prediction_s", 0.18), 0.18)
         )
         if car is not None:
-            self.publish_follow_control(
-                car, self.drop_final_target_z(), dt,
+            self.publish_drop_follow_control(
+                car, self.drop_final_target_z(), dt, "drop_align",
                 target_offset_xy=self.drop_uav_center_offset(),
             )
         if self.drop_ack_success:
@@ -1755,7 +2076,9 @@ class AirGroundMissionFSM:
         )
         if car is None:
             return
-        metrics = self.publish_follow_control(car, self.home_z + self.cruise_height, dt)
+        metrics = self.publish_dynamic_follow_control(
+            car, self.home_z + self.cruise_height, dt
+        )
         segment = str(self.land_cfg.get("segment_name", "CD")).upper()
         start = safe_float(self.land_cfg.get("window_start", 0.05), 0.05)
         latest = safe_float(self.land_cfg.get("latest_start", 0.42), 0.42)
@@ -1883,7 +2206,9 @@ class AirGroundMissionFSM:
             )
             self.landing_target_z = max(min_target, self.landing_target_z - rate * dt)
 
-        self.publish_follow_control(car, self.landing_target_z, dt, speed_scale=0.75)
+        self.publish_dynamic_follow_control(
+            car, self.landing_target_z, dt, speed_scale=0.75
+        )
 
         touched = self.touchdown_condition(platform_z)
         confirmed = self.update_stable_timer(
@@ -1920,7 +2245,9 @@ class AirGroundMissionFSM:
             self.land_cfg.get("platform_height_m", 0.34), 0.34
         )
         if car is not None:
-            self.publish_follow_control(car, platform_z, dt, speed_scale=0.55)
+            self.publish_dynamic_follow_control(
+                car, platform_z, dt, speed_scale=0.55
+            )
         else:
             self.publish_neutral()
         if self.current_state.armed:
@@ -1966,7 +2293,9 @@ class AirGroundMissionFSM:
             self.enter_return_home("CAR_LOST_AFTER_PLATFORM_ARM")
             return
         target_z = self.home_z + self.cruise_height
-        self.publish_follow_control(car, target_z, dt, speed_scale=0.85)
+        self.publish_dynamic_follow_control(
+            car, target_z, dt, speed_scale=0.85
+        )
 
         if self.platform_takeoff_prestream_start is None:
             self.platform_takeoff_prestream_start = rospy.Time.now()
@@ -2402,14 +2731,7 @@ class AirGroundMissionFSM:
                 self.handle_takeoff(dt)
 
             elif self.fsm_state == "DROP_HOVER":
-                self.publish_point_control(
-                    self.home_x, self.home_y, self.home_z + self.cruise_height, dt,
-                    0.5, 0.5, 0.8,
-                )
-                if self.state_elapsed() >= safe_float(
-                    self.takeoff_cfg.get("drop_hover_time_s", 3.0), 3.0
-                ):
-                    self.enter_state("INTERCEPT")
+                self.handle_drop_hover(dt)
 
             elif self.fsm_state == "INTERCEPT":
                 self.handle_intercept(dt)
