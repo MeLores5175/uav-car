@@ -23,7 +23,9 @@
     "command_retries": 3,
     "command_retry_interval_ms": 300,
     "land_retries": 5,
-    "land_retry_interval_ms": 150
+    "land_retry_interval_ms": 150,
+    "servo_retries": 4,
+    "servo_retry_interval_ms": 750
   },
   "defaults": {
     "devices": {

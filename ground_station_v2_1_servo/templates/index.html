@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>陆空协同无人机系统地面站｜V2.0 坐标修正版</title>
-  <link rel="stylesheet" href="/static/style.css?v=2.0">
+  <title>陆空协同无人机系统地面站｜V2.1 坐标修正版</title>
+  <link rel="stylesheet" href="/static/style.css?v=2.1">
 </head>
 <body>
   <header class="topbar">
     <div>
-      <h1>陆空协同无人机系统地面站 <span class="version-chip">V2.0 坐标修正版</span></h1>
+      <h1>陆空协同无人机系统地面站 <span class="version-chip">V2.1 单路舵机投放版</span></h1>
     </div>
     <div class="header-status">
-      <a class="header-action-btn header-debug-btn" href="/debug?v=2.0" target="_blank" rel="noopener">调试</a>
+      <a class="header-action-btn header-debug-btn" href="/debug?v=2.1" target="_blank" rel="noopener">调试</a>
       <a class="header-action-btn" href="/settings" target="_blank" rel="noopener">设置</a>
       <span id="wsBadge" class="status-badge offline">网页连接中</span>
       <span id="clockText" class="clock">--:--:--</span>
@@ -242,7 +242,26 @@
     </aside>
   </main>
 
+  <section class="bottom-tools" aria-label="起飞前投放舵机控制">
+    <article class="panel servo-control-panel">
+      <div class="servo-control-copy">
+        <span class="overview-kicker">投掷模块 · 起飞前装载</span>
+        <h2>单路舵机控制</h2>
+        <p>仅在无人机未解锁、任务未启动时可用。ESP32 上电自动执行 A30 锁止；FSM 投放时自动执行 A90。</p>
+      </div>
+      <div class="servo-control-state">
+        <span>当前反馈</span>
+        <strong id="servoState">未知</strong>
+        <small id="servoHint">等待无人机状态；装载前确认机械结构已锁止。</small>
+      </div>
+      <div class="servo-control-actions">
+        <button id="servoLockBtn" class="btn btn-primary">锁止 A30（装载）</button>
+        <button id="servoReleaseBtn" class="btn btn-danger">释放 A90（测试）</button>
+      </div>
+    </article>
+  </section>
+
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.8"></script>
+  <script src="/static/app.js?v=2.1"></script>
 </body>
 </html>

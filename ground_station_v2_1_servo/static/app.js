@@ -21,6 +21,10 @@ const ui = {
   logList: document.getElementById("logList"),
   missionStatus: document.getElementById("missionStatus"),
   missionLock: document.getElementById("missionLock"),
+  servoState: document.getElementById("servoState"),
+  servoHint: document.getElementById("servoHint"),
+  servoLockBtn: document.getElementById("servoLockBtn"),
+  servoReleaseBtn: document.getElementById("servoReleaseBtn"),
 };
 
 let selectedTask = "T1";
@@ -34,6 +38,7 @@ let lastUavTrailKey = "";
 let lastCarTrailKey = "";
 let taskLocked = false;
 let landSending = false;
+let servoSending = false;
 
 const stateLabels = {
   IDLE: "空闲",
@@ -73,6 +78,10 @@ const stateLabels = {
   LANDED: "已落地",
   PREPARING: "准备中",
   MISSION_START: "任务开始",
+  LOCKED: "A30 已锁止",
+  RELEASED: "A90 已释放",
+  COMMANDING: "命令发送中",
+  UNKNOWN: "未知",
 };
 
 function label(value, fallback = "--") {
@@ -178,6 +187,7 @@ function render(data) {
   renderDevice("uav", data.uav || {});
   renderDevice("car", data.car || {});
   renderMap(data);
+  renderServoControls(data);
   renderLogs(data.logs || []);
   setText("pendingCommands", String((data.pending || []).length));
 
@@ -264,6 +274,38 @@ function renderDevice(device, data) {
     setText("carYaw", fmt(tel.yaw_deg, 1, "°"));
     setText("carLine", tel.line_detected === undefined ? "--" : tel.line_detected ? "正常" : "丢线");
     setText("carBattery", fmt(tel.battery, 0, "%"));
+  }
+}
+
+function renderServoControls(data) {
+  if (!ui.servoLockBtn || !ui.servoReleaseBtn) return;
+  const servo = data.servo || {};
+  const uav = data.uav || {};
+  const tel = uav.telemetry || {};
+  const missionStatus = String(data.mission?.status || "IDLE").toUpperCase();
+  const armed = tel.armed === true || String(tel.armed).toLowerCase() === "true";
+  const linkOnline = String(uav.link?.state || "OFFLINE").toUpperCase() !== "OFFLINE";
+  const missionActive = ["STARTING", "RUNNING", "ABORTING"].includes(missionStatus);
+  const canManual = linkOnline && !armed && !missionActive && !servoSending;
+
+  ui.servoLockBtn.disabled = !canManual;
+  ui.servoReleaseBtn.disabled = !canManual;
+  ui.servoState.textContent = label(servo.state, "未知");
+
+  if (!linkOnline) {
+    ui.servoHint.textContent = "无人机离线，无法发送舵机命令。";
+  } else if (armed) {
+    ui.servoHint.textContent = "无人机已解锁，手动舵机控制已禁用。";
+  } else if (missionActive) {
+    ui.servoHint.textContent = "任务已启动，投放只能由 FSM 自动执行。";
+  } else if (servoSending) {
+    ui.servoHint.textContent = "正在等待无人机接收舵机命令……";
+  } else if (String(servo.state || "").toUpperCase() === "LOCKED") {
+    ui.servoHint.textContent = "舵机位于 A30 锁止位，可以装载物块。";
+  } else if (String(servo.state || "").toUpperCase() === "RELEASED") {
+    ui.servoHint.textContent = "舵机位于 A90 释放位，装载前请重新锁止。";
+  } else {
+    ui.servoHint.textContent = "ESP32 上电默认 A30；建议装载前再点一次锁止确认。";
   }
 }
 
@@ -412,6 +454,30 @@ ui.clearTrailBtn.addEventListener("click", async () => {
   clearTrailsLocal();
   await api("/api/clear_trails");
 });
+
+async function sendServoCommand(action) {
+  if (servoSending) return;
+  if (action === "RELEASE") {
+    const confirmed = window.confirm("确认执行 A90 释放？已装载的物块会立即落下。此按钮只用于起飞前测试。");
+    if (!confirmed) return;
+  }
+  servoSending = true;
+  if (snapshot) renderServoControls(snapshot);
+  try {
+    const data = await api("/api/servo", { action });
+    showToast(action === "LOCK"
+      ? `已发送锁止命令 ${data.angle}`
+      : `已发送释放命令 ${data.angle}`);
+  } finally {
+    setTimeout(() => {
+      servoSending = false;
+      if (snapshot) renderServoControls(snapshot);
+    }, 650);
+  }
+}
+
+ui.servoLockBtn?.addEventListener("click", () => sendServoCommand("LOCK"));
+ui.servoReleaseBtn?.addEventListener("click", () => sendServoCommand("RELEASE"));
 
 function setLandSliderProgress(value) {
   const v = Math.max(0, Math.min(100, Number(value) || 0));

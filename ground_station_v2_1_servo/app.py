@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""陆空协同无人机系统 HTML 地面站（V2.0 坐标修正版）
+"""陆空协同无人机系统 HTML 地面站（V2.1 单路舵机投放版）
 
 功能：
 - aiohttp 本地网页服务 + 原生 WebSocket 实时推送；
 - UDP 同时与无人机和小车通信；
 - 支持任务 1/任务 2、BOOT/MODE、PING、STATUS、START、LAND、RESET；
+- 页面底部提供起飞前单路舵机锁止/释放控制（A30/A90）；
 - 解析 ACK/ERR/EVT/HB/TEL 以及旧仓库 STATUS/VISION 报文；
 - 关键命令自动重发，使用 cmd_id 匹配 ACK 并防止误判；
 - 浏览器端显示横向比赛地图、无人机/小车位置、轨迹、状态和事件日志。
@@ -89,6 +90,12 @@ class GroundStation:
             "uav": self._new_device_state("UAV"),
             "car": self._new_device_state("CAR"),
             "last_vision": {},
+            "servo": {
+                "state": "UNKNOWN",
+                "last_action": "",
+                "last_result": "",
+                "last_epoch": 0.0,
+            },
         }
 
     @staticmethod
@@ -170,6 +177,12 @@ class GroundStation:
             self.state[device]["heartbeat"] = {"seq": None, "state": "UNKNOWN"}
             self.state[device]["telemetry"] = {}
             self.state[device]["raw_status"] = {}
+        self.state["servo"] = {
+            "state": "UNKNOWN",
+            "last_action": "",
+            "last_result": "",
+            "last_epoch": 0.0,
+        }
 
     def add_log(self, level: str, source: str, text: str) -> None:
         self.log_counter += 1
@@ -248,7 +261,11 @@ class GroundStation:
         text = ":".join(parts)
 
         proto_cfg = self.config.get("protocol", {})
-        if emergency:
+        if action == "SERVO":
+            # ESP32 串口桥最坏情况下会进行多次串口重试，地面站等待窗口需更长。
+            retries = int(proto_cfg.get("servo_retries", 4))
+            interval = float(proto_cfg.get("servo_retry_interval_ms", 750)) / 1000.0
+        elif emergency:
             retries = int(proto_cfg.get("land_retries", 5))
             interval = float(proto_cfg.get("land_retry_interval_ms", 150)) / 1000.0
         else:
@@ -289,6 +306,12 @@ class GroundStation:
                 "GS",
                 f"命令超时：{expired['device'].upper()} {expired['action']}，未收到 ACK",
             )
+            if str(expired.get("action", "")).upper() == "SERVO":
+                self.state["servo"].update({
+                    "state": "ERROR",
+                    "last_result": "ACK_TIMEOUT",
+                    "last_epoch": time.time(),
+                })
             self.mark_dirty()
 
     def handle_udp_message(self, text: str, addr: Tuple[str, int]) -> None:
@@ -356,6 +379,23 @@ class GroundStation:
                 self.state["car"]["telemetry"]["state"] = "READY"
             if pending and action == "LAND" and prefix == "ACK":
                 self.state["uav"]["telemetry"]["safety"] = "ABORTING"
+            if action == "SERVO":
+                semantic = str(detail or result).upper()
+                if prefix == "ACK":
+                    if semantic == "LOCK":
+                        servo_state = "LOCKED"
+                    elif semantic == "RELEASE":
+                        servo_state = "RELEASED"
+                    else:
+                        servo_state = "OK"
+                else:
+                    servo_state = "ERROR"
+                self.state["servo"].update({
+                    "state": servo_state,
+                    "last_action": semantic,
+                    "last_result": result if not detail else f"{result}:{detail}",
+                    "last_epoch": time.time(),
+                })
             return
 
         # 兼容旧仓库，例如 ACK:PING:NORMAL / ACK:START:OK
@@ -519,6 +559,7 @@ class GroundStation:
                 "link": self._link_state(self.state["car"]["last_seen_epoch"]),
             },
             "last_vision": self.state["last_vision"],
+            "servo": dict(self.state["servo"]),
             "pending": [
                 {
                     "cmd_id": key,
@@ -667,7 +708,7 @@ class GroundStation:
             )
 
         uav_tel = self.state.get("uav", {}).get("telemetry", {})
-        armed = uav_tel.get("armed") is True
+        armed = uav_tel.get("armed") is True or str(uav_tel.get("armed", "")).lower() == "true"
         if armed and action in {"BOOT", "RESET"}:
             return web.json_response(
                 {"ok": False, "error": f"无人机已解锁，禁止发送 {action}"},
@@ -720,6 +761,45 @@ class GroundStation:
             payload["task"] = task
         return web.json_response(
             payload,
+            dumps=lambda x: json.dumps(x, ensure_ascii=False),
+        )
+
+    async def api_servo(self, request: web.Request) -> web.Response:
+        """起飞前单路舵机控制：LOCK=A30，RELEASE=A90。"""
+        body = await self._json_body(request)
+        action = str(body.get("action", "")).strip().upper()
+        if action not in {"LOCK", "RELEASE"}:
+            return web.json_response(
+                {"ok": False, "error": "舵机 action 只能是 LOCK 或 RELEASE"},
+                status=400,
+                dumps=lambda x: json.dumps(x, ensure_ascii=False),
+            )
+
+        mission_status = str(self.state["mission"].get("status", "IDLE")).upper()
+        uav_tel = self.state.get("uav", {}).get("telemetry", {})
+        armed = uav_tel.get("armed") is True
+        if armed or mission_status in {"STARTING", "RUNNING", "ABORTING"}:
+            return web.json_response(
+                {"ok": False, "error": "舵机手动控制只允许在无人机起飞前使用"},
+                status=409,
+                dumps=lambda x: json.dumps(x, ensure_ascii=False),
+            )
+
+        self.state["servo"].update({
+            "state": "COMMANDING",
+            "last_action": action,
+            "last_result": "PENDING",
+            "last_epoch": time.time(),
+        })
+        cmd_id = self.send_command("uav", "SERVO", [action])
+        angle = "A30" if action == "LOCK" else "A90"
+        self.add_log(
+            "WARN" if action == "RELEASE" else "INFO",
+            "SERVO",
+            f"起飞前舵机命令：{action}（{angle}），cmd_id={cmd_id}",
+        )
+        return web.json_response(
+            {"ok": True, "cmd_id": cmd_id, "action": action, "angle": angle},
             dumps=lambda x: json.dumps(x, ensure_ascii=False),
         )
 
@@ -801,7 +881,7 @@ class GroundStation:
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
-        response.headers["X-Ground-Station-Version"] = "2.0-coordinate-fix"
+        response.headers["X-Ground-Station-Version"] = "2.1-servo-drop"
         return response
 
     async def index(self, request: web.Request) -> web.FileResponse:
@@ -861,6 +941,7 @@ def create_app(config: Dict[str, Any], config_path: Path) -> web.Application:
     app.router.add_get("/api/settings", station.api_settings_get)
     app.router.add_post("/api/settings", station.api_settings_save)
     app.router.add_post("/api/debug/uav_command", station.api_debug_uav_command)
+    app.router.add_post("/api/servo", station.api_servo)
     app.router.add_post("/api/prepare", station.api_prepare)
     app.router.add_post("/api/ping", station.api_ping)
     app.router.add_post("/api/status", station.api_status)
@@ -889,7 +970,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
-    logging.info("========== GROUND STATION V1.9 DEBUG BUILD ==========")
+    logging.info("========== GROUND STATION V2.1 SERVO DROP BUILD ==========")
     ui = config["ui"]
     app = create_app(config, config_path)
     web.run_app(

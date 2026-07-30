@@ -573,3 +573,59 @@ body {
   font-weight: 900;
   vertical-align: middle;
 }
+
+
+/* V2.1：页面底部单路舵机控制 */
+.bottom-tools {
+  padding: 0 12px 14px;
+}
+.servo-control-panel {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.4fr) minmax(220px, .8fr) minmax(260px, .8fr);
+  gap: 16px;
+  align-items: center;
+  padding: 15px 17px;
+}
+.servo-control-copy h2 {
+  margin: 3px 0 5px;
+  font-size: 18px;
+}
+.servo-control-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.servo-control-state {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #d8e3ec;
+  border-radius: 10px;
+  background: #f7fafc;
+}
+.servo-control-state span,
+.servo-control-state small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.servo-control-state strong {
+  font-size: 17px;
+}
+.servo-control-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+.btn-danger {
+  color: #fff;
+  background: #d84343;
+  border: 1px solid #bf3030;
+}
+@media (max-width: 980px) {
+  .servo-control-panel { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .bottom-tools { padding: 0 8px 10px; }
+  .servo-control-actions { grid-template-columns: 1fr; }
+}
