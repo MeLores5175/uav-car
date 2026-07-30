@@ -268,6 +268,7 @@ class AirGroundMissionFSM:
         self.drop_descent_stable_since = None
         self.touchdown_since = None
         self.home_stable_since = None
+        self.post_drop_recover_since = None
         self.home_land_stable_since = None
         self.takeoff_stable_since = None
         # 任务一：首次满足起飞位置/速度判稳条件时，立即进入3秒悬停计时。
@@ -1620,24 +1621,114 @@ class AirGroundMissionFSM:
             self.enter_return_home("DROP_ACK_FAILED")
 
     def handle_post_drop_follow(self, dt):
-        car = self.update_car_estimator(
-            safe_float(self.follow_cfg.get("follow_prediction_s", 0.18), 0.18)
+        """
+        投放完成后的恢复阶段：
+        1. 不再继续伴飞；
+        2. XY方向使用jerk/加速度限制平滑减速到0；
+        3. Z轴匀速抬升到指定恢复高度；
+        4. XY速度稳定0.4s后才进入返航。
+        """
+        # 1) XY平滑刹停
+        self.update_xy_command(
+            0.0,
+            0.0,
+            dt,
+            safe_float(
+                self.drop_cfg.get(
+                    "post_drop_xy_brake_accel_mps2", 0.35
+                ),
+                0.35,
+            ),
+            safe_float(
+                self.drop_cfg.get(
+                    "post_drop_xy_brake_jerk_mps3", 0.80
+                ),
+                0.80,
+            ),
         )
-        if car is not None:
-            self.publish_follow_control(
-                car,
-                self.home_z + self.cruise_height,
-                dt,
-                max_vz_override=safe_float(
-                    self.drop_cfg.get("post_drop_climb_speed_mps", 0.18), 0.18
+
+        # 2) Z抬升到恢复高度
+        recover_z = self.home_z + safe_float(
+            self.drop_cfg.get(
+                "post_drop_recover_height_m",
+                self.cruise_height,
+            ),
+            self.cruise_height,
+        )
+
+        z_error = recover_z - self.current_pose.pose.position.z
+        max_vz = safe_float(
+            self.drop_cfg.get(
+                "post_drop_climb_speed_mps",
+                0.25,
+            ),
+            0.25,
+        )
+        max_az = safe_float(
+            self.drop_cfg.get(
+                "post_drop_climb_accel_mps2",
+                0.30,
+            ),
+            0.30,
+        )
+
+        desired_vz = max(-max_vz, min(max_vz, 0.9 * z_error))
+        self.cmd_vz += max(
+            -max_az * dt,
+            min(max_az * dt, desired_vz - self.cmd_vz),
+        )
+
+        self.publish_position_xy_velocity_xyz_yaw(
+            self.current_pose.pose.position.x,
+            self.current_pose.pose.position.y,
+            self.cmd_xy[0],
+            self.cmd_xy[1],
+            self.cmd_vz,
+            self.current_yaw,
+        )
+
+        # 3) 判断恢复完成：
+        # 高度达到目标 + XY已经刹停 + 连续稳定0.4s
+        xy_speed = norm2(self.cmd_xy[0], self.cmd_xy[1])
+        height_ok = abs(z_error) <= safe_float(
+            self.drop_cfg.get(
+                "post_drop_height_tolerance_m",
+                0.08,
+            ),
+            0.08,
+        )
+        speed_ok = xy_speed <= safe_float(
+            self.drop_cfg.get(
+                "post_drop_xy_stable_speed_mps",
+                0.05,
+            ),
+            0.05,
+        )
+
+        ready = height_ok and speed_ok
+
+        if ready:
+            if self.post_drop_recover_since is None:
+                self.post_drop_recover_since = rospy.Time.now()
+
+            stable_time = (
+                rospy.Time.now() -
+                self.post_drop_recover_since
+            ).to_sec()
+
+            if stable_time >= safe_float(
+                self.drop_cfg.get(
+                    "post_drop_recover_stable_time_s",
+                    0.40,
                 ),
-                max_az_override=safe_float(
-                    self.drop_cfg.get("post_drop_climb_accel_mps2", 0.25), 0.25
-                ),
-            )
-        hold = safe_float(self.drop_cfg.get("post_drop_follow_s", 0.50), 0.50)
-        if self.drop_done_time is not None and (rospy.Time.now() - self.drop_done_time).to_sec() >= hold:
-            self.enter_return_home("DROP_TASK_COMPLETE")
+                0.40,
+            ):
+                self.enter_return_home(
+                    "DROP_RECOVER_COMPLETE"
+                )
+        else:
+            self.post_drop_recover_since = None
+
 
     def handle_follow_cd(self, dt):
         car = self.update_car_estimator(

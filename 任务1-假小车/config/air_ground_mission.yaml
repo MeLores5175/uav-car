@@ -114,6 +114,16 @@ mission:
     align_relative_speed_mps: 0.075
     align_stable_time_s: 0.45
     align_timeout_s: 1.50           # 精确瞄准超过 1.5 秒且仍在窗口内时直接投放
+    # 投放完成后的恢复动作：停止伴飞，先平滑刹停XY，同时抬升到恢复高度。
+    post_drop_recover_height_m: 1.20       # 相对H点高度
+    post_drop_climb_speed_mps: 0.25        # 回升最大速度
+    post_drop_climb_accel_mps2: 0.30       # 回升最大加速度
+    post_drop_xy_brake_accel_mps2: 0.35    # 投放后XY减速加速度
+    post_drop_xy_brake_jerk_mps3: 0.80     # 投放后XY减速度变化率
+    post_drop_xy_stable_speed_mps: 0.05    # XY速度认为稳定阈值
+    post_drop_height_tolerance_m: 0.08     # 高度到位误差
+    post_drop_recover_stable_time_s: 0.40  # 稳定后等待时间
+
     fall_time_s: 0.58               # 改为低空投放后必须重新实测标定
     predicted_error_limit_m: 0.085
     vision_required: true
