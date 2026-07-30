@@ -882,7 +882,24 @@ class AirGroundMissionFSM:
         }
 
     def vision_abs_measurement(self):
-        if not self.vision_valid() or self.current_pose is None:
+        if not self.vision_valid():
+            return None
+
+        # 融合视觉节点已经按图像采集时刻匹配 UAV 位姿，并给出 MAVROS local
+        # 绝对坐标。优先使用该结果，避免推理延迟期间无人机移动造成二次换算误差。
+        if bool(self.vision_data.get("local_position_valid", False)):
+            target_x = self.vision_data.get("target_x_local")
+            target_y = self.vision_data.get("target_y_local")
+            if target_x is not None and target_y is not None:
+                return {
+                    "x": safe_float(target_x, 0.0),
+                    "y": safe_float(target_y, 0.0),
+                    "confidence": safe_float(self.vision_data.get("confidence", 0.0)),
+                    "stable_count": safe_int(self.vision_data.get("stable_count", 0)),
+                }
+
+        # 兼容旧视觉消息：仅有机体系 forward/left 时，使用当前位姿换算。
+        if self.current_pose is None:
             return None
         forward = safe_float(self.vision_data.get("forward_m", 0.0))
         left = safe_float(self.vision_data.get("left_m", 0.0))
