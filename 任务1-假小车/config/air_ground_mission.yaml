@@ -40,12 +40,13 @@ mission:
     position_kp: 0.95                          # 仅 legacy_outer_pd 使用
     relative_velocity_kd: 0.35                # 仅 legacy_outer_pd 使用
     vertical_kp: 0.90
-    max_horizontal_speed_mps: 1.20
-    max_horizontal_accel_mps2: 0.80
+    max_horizontal_speed_mps: 0.75
+    max_horizontal_accel_mps2: 0.55
+    max_horizontal_jerk_mps3: 0.90       # 半圆速度方向连续变化时限制加速度突变
     max_vertical_speed_mps: 0.45
     max_vertical_accel_mps2: 0.60
-    intercept_prediction_s: 0.30
-    follow_prediction_s: 0.10
+    intercept_prediction_s: 0.20
+    follow_prediction_s: 0.08
 
     acquire_position_error_m: 0.20
     acquire_relative_speed_mps: 0.18
@@ -58,12 +59,15 @@ mission:
   estimator:
     telemetry_timeout_s: 0.50
     vision_timeout_s: 0.35
-    telemetry_position_alpha: 0.45
-    telemetry_velocity_alpha: 0.65
+    telemetry_position_alpha: 0.70       # 假小车坐标为连续真值，提高响应并减少弯道滞后
+    telemetry_velocity_alpha: 0.75
     vision_position_alpha: 0.72
     position_beta: 0.015
-    max_car_speed_mps: 0.45
-    max_prediction_s: 0.70
+    max_car_speed_mps: 0.65
+    max_prediction_s: 0.30
+    curve_prediction_enabled: true       # BC/DA 使用恒曲率预测，不再沿切线直线外推
+    curve_prediction_radius_m: 0.75
+    curve_turn_direction: 1.0            # 当前跑道模型中 BC/DA 的 local yaw 均随里程增大
     vision_min_confidence: 0.55
     vision_min_stable_count: 2
     car_state_is_relative_home: true
@@ -109,7 +113,7 @@ mission:
     align_position_error_m: 0.075
     align_relative_speed_mps: 0.075
     align_stable_time_s: 0.45
-    align_timeout_s: 1.00            # 精确瞄准超过 1.0 秒且仍在窗口内时直接投放
+    align_timeout_s: 1.50           # 精确瞄准超过 1.5 秒且仍在窗口内时直接投放
     fall_time_s: 0.58               # 改为低空投放后必须重新实测标定
     predicted_error_limit_m: 0.085
     vision_required: true
@@ -117,7 +121,9 @@ mission:
     ack_timeout_s: 1.80
     retry_interval_s: 0.55
     max_retries: 3
-    post_drop_follow_s: 0.50
+    post_drop_follow_s: 1.20
+    post_drop_climb_speed_mps: 0.40      # 投掷后缓慢抬升，不再使用全局0.45m/s上限
+    post_drop_climb_accel_mps2: 0.30
 
   dynamic_landing:
     # 用户已确定：只允许在 C-D 直线段下降和着陆。
@@ -158,14 +164,37 @@ mission:
     takeoff_max_wait_s: 8.0
 
   return_home:
-    height_m: 1.50
-    max_horizontal_speed_mps: 1.00
-    max_horizontal_accel_mps2: 0.70
-    position_kp: 0.80
-    position_tolerance_m: 0.16
-    speed_tolerance_mps: 0.18
-    stable_time_s: 0.45
-    auto_land_prepare_s: 0.60
+    # 投掷后返航采用纯速度外环，速度上限在本节点中真正生效。
+    height_m: 1.20
+    max_horizontal_speed_mps: 0.45
+    max_horizontal_accel_mps2: 0.30
+    max_horizontal_jerk_mps3: 0.70
+    max_vertical_speed_mps: 0.22
+    max_vertical_accel_mps2: 0.30
+    position_kp: 0.55
+    position_tolerance_m: 0.08
+    z_tolerance_m: 0.10
+    speed_tolerance_mps: 0.10
+    stable_time_s: 1.00
+
+    # 到达H点上方后仍保持OFFBOARD，边修正XY边缓慢下降；
+    # 只有降到较低高度且XY再次稳定后，才交给PX4 AUTO.LAND完成最后着陆。
+    landing_max_horizontal_speed_mps: 0.25
+    landing_max_horizontal_accel_mps2: 0.25
+    landing_max_horizontal_jerk_mps3: 0.60
+    landing_position_kp: 0.65
+    landing_descent_rate_mps: 0.15
+    landing_final_rate_mps: 0.08
+    landing_slow_height_m: 0.45
+    landing_pause_xy_error_m: 0.10
+    landing_pause_horizontal_speed_mps: 0.12
+    auto_land_handoff_height_m: 0.30
+    auto_land_xy_tolerance_m: 0.06
+    auto_land_z_tolerance_m: 0.05
+    auto_land_horizontal_speed_mps: 0.08
+    auto_land_vertical_speed_mps: 0.08
+    auto_land_stable_time_s: 0.80
+    auto_land_prepare_s: 0.30
     auto_land_timeout_s: 15.0
 
   safety:
