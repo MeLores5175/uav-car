@@ -1,0 +1,234 @@
+.debug-body {
+  min-height: 100vh;
+}
+
+.header-debug-btn {
+  background: rgba(255, 196, 64, .18);
+  border-color: rgba(255, 222, 144, .65);
+}
+
+.debug-shell {
+  width: min(1800px, 100%);
+  margin: 0 auto;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(650px, 1.7fr) minmax(410px, .92fr);
+  gap: 12px;
+  min-height: calc(100vh - 64px);
+  align-items: start;
+}
+
+.debug-map-column,
+.debug-side-column {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.debug-map-readouts {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.debug-control-panel {
+  padding-bottom: 12px;
+  border-top: 3px solid #b56a00;
+}
+
+.debug-badge {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: #8a4b00;
+  background: #fff1d3;
+  border: 1px solid #efc36f;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .08em;
+}
+
+.debug-warning {
+  margin: 0 12px 10px;
+  padding: 10px 11px;
+  border-radius: 9px;
+  color: #6f3400;
+  background: #fff4df;
+  border: 1px solid #efc98a;
+}
+.debug-warning strong,
+.debug-warning span {
+  display: block;
+}
+.debug-warning strong {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.debug-warning span {
+  margin-top: 4px;
+  color: #86511c;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.debug-task-select {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 0 12px 10px;
+}
+
+.debug-task-option {
+  min-height: 40px;
+  border: 1px solid #cfdbe6;
+  border-radius: 8px;
+  background: #f5f8fb;
+  color: #334c62;
+  font-weight: 900;
+  cursor: pointer;
+}
+.debug-task-option.active {
+  color: #fff;
+  border-color: #0b63a5;
+  background: #0f6fb6;
+  box-shadow: 0 0 0 3px rgba(15,111,182,.18);
+}
+
+.debug-command-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 0 12px 10px;
+}
+
+.debug-start-hold {
+  --hold-progress: 0%;
+  position: relative;
+  width: calc(100% - 24px);
+  min-height: 68px;
+  margin: 0 12px 10px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #0c6d43;
+  border-radius: 10px;
+  color: #fff;
+  background: #168450;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  box-shadow: 0 6px 16px rgba(23, 131, 79, .20);
+}
+.debug-start-hold:disabled {
+  cursor: wait;
+  opacity: .7;
+}
+.debug-start-progress {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--hold-progress);
+  background: rgba(5, 75, 43, .52);
+  transition: width .03s linear;
+}
+.debug-start-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-height: 66px;
+  padding: 10px 14px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.debug-start-content strong {
+  font-size: 15px;
+}
+.debug-start-content small {
+  margin-top: 4px;
+  opacity: .86;
+  font-size: 11px;
+}
+.debug-start-hold.holding {
+  box-shadow: 0 0 0 4px rgba(23, 131, 79, .18), 0 7px 18px rgba(23, 131, 79, .25);
+}
+
+.debug-emergency-wrap {
+  padding-bottom: 0;
+}
+
+.btn-danger-outline {
+  color: #a31f25;
+  background: #fff5f5;
+  border: 1px solid #e4aeb1;
+}
+.debug-stop-btn {
+  margin-top: 0;
+}
+
+.debug-data-grid {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.debug-command-status {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 7px;
+  padding: 10px;
+  border-top: 3px solid #66788b;
+}
+.debug-command-status > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: #f5f8fb;
+  border: 1px solid #e1e8ef;
+}
+.debug-command-status span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.debug-command-status strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.debug-log-panel .log-list {
+  max-height: 300px;
+}
+
+@media (max-width: 1180px) {
+  .debug-shell {
+    grid-template-columns: 1fr;
+  }
+  .debug-side-column {
+    grid-template-columns: 1fr 1fr;
+  }
+  .debug-control-panel {
+    grid-row: span 2;
+  }
+}
+
+@media (max-width: 760px) {
+  .debug-shell {
+    padding: 8px;
+  }
+  .debug-side-column {
+    grid-template-columns: 1fr;
+  }
+  .debug-control-panel {
+    grid-row: auto;
+  }
+  .debug-map-readouts,
+  .debug-data-grid,
+  .debug-command-status {
+    grid-template-columns: 1fr 1fr;
+  }
+  .header-status {
+    gap: 7px;
+  }
+  .header-status .clock {
+    display: none;
+  }
+}
