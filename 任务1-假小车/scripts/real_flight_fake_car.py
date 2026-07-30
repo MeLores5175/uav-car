@@ -6,7 +6,7 @@
 用途：
 1. 在没有真实小车时，连续发布 /car/state，让真实无人机沿标定赛道跟随虚拟目标；
 2. 可选发布合成 /uav/platform_vision，仅用于任务一低速航迹测试；
-3. 默认不自动启动任务、不自动移动，必须收到明确命令或进入 INTERCEPT 后才运动；
+3. 假小车联调 START 时严格模拟正式时序：小车先运动，再延时触发无人机 START；
 4. 任务进入返航、降落、应急或等待复位时，虚拟小车立即停止。
 
 严禁：在没有真实承载平台时，用合成视觉测试 dynamic_land 动态降落。
@@ -44,15 +44,50 @@ def safe_int(value, default=0):
 
 
 class StadiumTrackModel:
-    """以 H 点为原点的体育场形赛道模型。"""
+    """体育场形赛道模型；内部统一输出“相对 H 的 MAVROS local ENU 坐标”。"""
 
-    def __init__(self, cfg):
-        self.a_x = safe_float(cfg.get("a_x_m", 1.25), 1.25)
-        self.a_y = safe_float(cfg.get("a_y_m", 0.75), 0.75)
-        self.yaw_ab = math.radians(safe_float(cfg.get("ab_yaw_deg", 90.0), 90.0))
+    def __init__(self, cfg, field_cfg=None):
+        field_cfg = field_cfg or {}
+        self.coordinate_mode = str(cfg.get("coordinate_mode", "local")).strip().lower()
+        self.h_field_x_m = safe_float(field_cfg.get("h_field_x_cm", 75.0), 75.0) / 100.0
+        self.h_field_y_m = safe_float(field_cfg.get("h_field_y_cm", 75.0), 75.0) / 100.0
+        self.local_to_field_theta = math.radians(
+            safe_float(field_cfg.get("local_x_to_field_yaw_deg", 0.0), 0.0)
+        )
+
+        if self.coordinate_mode == "field":
+            a_field_x = safe_float(cfg.get("a_field_x_cm", 150.0), 150.0) / 100.0
+            a_field_y = safe_float(cfg.get("a_field_y_cm", 200.0), 200.0) / 100.0
+            dx = a_field_x - self.h_field_x_m
+            dy = a_field_y - self.h_field_y_m
+            c = math.cos(self.local_to_field_theta)
+            sn = math.sin(self.local_to_field_theta)
+            # FIELD -> relative-H local：R(-theta) * (P_field - H_field)
+            self.a_x = c * dx + sn * dy
+            self.a_y = -sn * dx + c * dy
+            yaw_field = math.radians(
+                safe_float(cfg.get("ab_field_yaw_deg", 90.0), 90.0)
+            )
+            self.yaw_ab = math.atan2(
+                math.sin(yaw_field - self.local_to_field_theta),
+                math.cos(yaw_field - self.local_to_field_theta),
+            )
+        else:
+            self.a_x = safe_float(cfg.get("a_x_m", 0.75), 0.75)
+            self.a_y = safe_float(cfg.get("a_y_m", 1.25), 1.25)
+            self.yaw_ab = math.radians(safe_float(cfg.get("ab_yaw_deg", 90.0), 90.0))
+
         self.length = max(0.05, safe_float(cfg.get("straight_length_m", 1.50), 1.50))
         self.radius = max(0.05, safe_float(cfg.get("radius_m", 0.75), 0.75))
         self.total = 2.0 * self.length + 2.0 * math.pi * self.radius
+
+    def relative_home_to_field(self, x_local, y_local):
+        c = math.cos(self.local_to_field_theta)
+        sn = math.sin(self.local_to_field_theta)
+        return (
+            self.h_field_x_m + c * x_local - sn * y_local,
+            self.h_field_y_m + sn * x_local + c * y_local,
+        )
 
     def local_to_relative_home(self, u, v):
         forward_x = math.cos(self.yaw_ab)
@@ -108,18 +143,35 @@ class StadiumTrackModel:
             du, dv = -math.cos(theta), -math.sin(theta)
 
         x, y = self.local_to_relative_home(u, v)
+        field_x, field_y = self.relative_home_to_field(x, y)
         yaw = self.heading(du, dv)
+        yaw_field = math.atan2(
+            math.sin(yaw + self.local_to_field_theta),
+            math.cos(yaw + self.local_to_field_theta),
+        )
         return {
             "x": x,
             "y": y,
+            "field_x_cm": field_x * 100.0,
+            "field_y_cm": field_y * 100.0,
             "vx": speed * math.cos(yaw),
             "vy": speed * math.sin(yaw),
             "yaw": yaw,
+            "yaw_field_deg": math.degrees(yaw_field) % 360.0,
             "segment": segment,
             "segment_progress": clamp(progress, 0.0, 1.0),
             "path_s": s,
             "lap_progress": s / self.total,
         }
+
+    def landmarks(self):
+        samples = {
+            "A": 0.0,
+            "B": self.length,
+            "C": self.length + math.pi * self.radius,
+            "D": 2.0 * self.length + math.pi * self.radius,
+        }
+        return {name: self.map(path_s, 0.0) for name, path_s in samples.items()}
 
 
 class RealFlightFakeCar:
@@ -141,7 +193,8 @@ class RealFlightFakeCar:
             cfg = yaml.safe_load(stream) or {}
 
         track_cfg = cfg.get("car_udp", {}).get("track", {})
-        self.track = StadiumTrackModel(track_cfg)
+        field_cfg = cfg.get("udp_protocol", {}).get("field_transform", {})
+        self.track = StadiumTrackModel(track_cfg, field_cfg)
 
         self.mission_type = str(rospy.get_param("~mission_type", "drop")).strip().lower()
         if self.mission_type not in {"drop", "dynamic_land"}:
@@ -192,6 +245,14 @@ class RealFlightFakeCar:
         self.auto_run_on_intercept = bool(
             rospy.get_param("~auto_run_on_intercept", False)
         )
+        self.auto_run_on_follow = bool(
+            rospy.get_param("~auto_run_on_follow", False)
+        )
+        # 正式题目时序：小车先开始运动，再由小车通知无人机起飞。
+        # 假小车联调使用 /fake_car/start_sequence 模拟这一过程。
+        self.start_lead_s = max(
+            0.05, safe_float(rospy.get_param("~start_lead_s", 0.25), 0.25)
+        )
         self.publish_fake_vision = bool(
             rospy.get_param("~publish_fake_vision", False)
         )
@@ -225,6 +286,7 @@ class RealFlightFakeCar:
         self.current_yaw = 0.0
         self.vision_stable_count = 0
         self.start_timer = None
+        self.pending_start_command = None
         self.lock = threading.Lock()
 
         self.car_pub = rospy.Publisher("/car/state", String, queue_size=30)
@@ -235,6 +297,9 @@ class RealFlightFakeCar:
             "/uav/mission_type", String, queue_size=3, latch=True
         )
         self.start_pub = rospy.Publisher("/uav/start", Bool, queue_size=3)
+        self.mission_command_pub = rospy.Publisher(
+            "/uav/mission_command", String, queue_size=10
+        )
         self.status_pub = rospy.Publisher(
             "/fake_car/status", String, queue_size=3, latch=True
         )
@@ -242,6 +307,9 @@ class RealFlightFakeCar:
         rospy.Subscriber("/fake_car/run", Bool, self.run_cb, queue_size=5)
         rospy.Subscriber("/fake_car/reset", Bool, self.reset_cb, queue_size=5)
         rospy.Subscriber("/fake_car/start_mission", Bool, self.start_mission_cb, queue_size=5)
+        rospy.Subscriber(
+            "/fake_car/start_sequence", String, self.start_sequence_cb, queue_size=5
+        )
         rospy.Subscriber("/uav/mission_status", String, self.mission_status_cb, queue_size=20)
         rospy.Subscriber("/uav/platform_scan_enable", Bool, self.scan_cb, queue_size=5)
         rospy.Subscriber(
@@ -266,12 +334,26 @@ class RealFlightFakeCar:
             self.segment_speeds["CD"],
             self.segment_speeds["DA"],
         )
+        landmarks = self.track.landmarks()
         rospy.logwarn(
-            "Track calibration: A=(%.3f, %.3f)m relative H, AB yaw=%.1fdeg, total=%.3fm",
+            "Track mapping: mode=%s H_field=(%.1f,%.1f)cm A_local=(%.3f,%.3f)m "
+            "A_field=(%.1f,%.1f)cm AB_local_yaw=%.1fdeg total=%.3fm",
+            self.track.coordinate_mode,
+            self.track.h_field_x_m * 100.0,
+            self.track.h_field_y_m * 100.0,
             self.track.a_x,
             self.track.a_y,
+            landmarks["A"]["field_x_cm"],
+            landmarks["A"]["field_y_cm"],
             math.degrees(self.track.yaw_ab),
             self.track.total,
+        )
+        rospy.logwarn(
+            "FIELD landmarks: A=(%.1f,%.1f) B=(%.1f,%.1f) C=(%.1f,%.1f) D=(%.1f,%.1f)cm",
+            landmarks["A"]["field_x_cm"], landmarks["A"]["field_y_cm"],
+            landmarks["B"]["field_x_cm"], landmarks["B"]["field_y_cm"],
+            landmarks["C"]["field_x_cm"], landmarks["C"]["field_y_cm"],
+            landmarks["D"]["field_x_cm"], landmarks["D"]["field_y_cm"],
         )
 
     def conflict_check_cb(self, _event):
@@ -317,6 +399,69 @@ class RealFlightFakeCar:
         if not self.scan_enabled:
             self.vision_stable_count = 0
 
+    def cancel_pending_start(self):
+        if self.start_timer is not None:
+            try:
+                self.start_timer.shutdown()
+            except Exception:
+                pass
+            self.start_timer = None
+        self.pending_start_command = None
+
+    def start_sequence_cb(self, msg):
+        """假小车正式联调时序：小车先运动，延时后再把 START 交给 FSM。"""
+        try:
+            command = json.loads(msg.data)
+        except Exception as exc:
+            rospy.logerr("Invalid /fake_car/start_sequence JSON: %s", str(exc))
+            return
+        if str(command.get("action", "")).strip().upper() != "START":
+            rospy.logerr("Fake-car start sequence rejected: action is not START")
+            return
+        if self.home is None or self.current_pose is None:
+            rospy.logerr("Fake-car start sequence rejected: MAVROS pose/FSM home not ready")
+            return
+        if self.fsm_state not in {"WAIT_START", "UNKNOWN"}:
+            rospy.logerr("Fake-car start sequence rejected: FSM state is %s", self.fsm_state)
+            return
+
+        self.cancel_pending_start()
+        self.type_pub.publish(String(data=self.mission_type))
+        with self.lock:
+            self.running = True
+        self.pending_start_command = command
+        self.start_timer = rospy.Timer(
+            rospy.Duration(self.start_lead_s),
+            self.publish_mission_command_once,
+            oneshot=True,
+        )
+        rospy.logwarn(
+            "Fake-car START sequence accepted: car is MOVING first; UAV START in %.2fs "
+            "run=%s task=%s",
+            self.start_lead_s,
+            str(command.get("run_id", "R000")),
+            str(command.get("task", "T1")),
+        )
+
+    def publish_mission_command_once(self, _event):
+        command = self.pending_start_command
+        self.start_timer = None
+        self.pending_start_command = None
+        if command is None:
+            return
+        if self.fsm_state not in {"WAIT_START", "UNKNOWN"}:
+            with self.lock:
+                self.running = False
+            rospy.logerr(
+                "UAV START cancelled after car lead: FSM state changed to %s",
+                self.fsm_state,
+            )
+            return
+        self.mission_command_pub.publish(
+            String(data=json.dumps(command, ensure_ascii=False, separators=(",", ":")))
+        )
+        rospy.logwarn("Car lead complete; START forwarded to UAV FSM")
+
     def mission_status_cb(self, msg):
         try:
             data = json.loads(msg.data)
@@ -339,6 +484,7 @@ class RealFlightFakeCar:
             if self.running:
                 rospy.logwarn("Fake car stopped because FSM entered %s", self.fsm_state)
             self.running = False
+            self.cancel_pending_start()
 
         if (
             self.auto_run_on_intercept
@@ -348,14 +494,29 @@ class RealFlightFakeCar:
             self.running = True
             rospy.logwarn("Fake car motion started automatically at INTERCEPT")
 
+        if (
+            self.auto_run_on_follow
+            and self.fsm_state in {"FOLLOW_DROP", "FOLLOW_CD"}
+            and self.last_fsm_state != self.fsm_state
+        ):
+            self.running = True
+            rospy.logwarn(
+                "Fake car motion started after UAV acquisition: FSM=%s", self.fsm_state
+            )
+
     def run_cb(self, msg):
+        requested = bool(msg.data)
+        if not requested:
+            # LAND/RESET 在无人机真正进入终止状态前也必须能取消待发送的 START。
+            self.cancel_pending_start()
         with self.lock:
-            self.running = bool(msg.data)
+            self.running = requested
         rospy.logwarn("Fake car running=%s", self.running)
 
     def reset_cb(self, msg):
         if not msg.data:
             return
+        self.cancel_pending_start()
         with self.lock:
             self.running = False
             self.path_s = clamp(
@@ -367,6 +528,7 @@ class RealFlightFakeCar:
         rospy.logwarn("Fake car reset to path_s=%.3fm and stopped", self.path_s)
 
     def start_mission_cb(self, msg):
+        """兼容旧 ROS 调试入口：同样保证小车先动、无人机后起飞。"""
         if not msg.data:
             return
         if self.home is None or self.current_pose is None:
@@ -376,22 +538,25 @@ class RealFlightFakeCar:
             rospy.logerr("Start rejected: FSM state is %s", self.fsm_state)
             return
 
+        self.cancel_pending_start()
         self.type_pub.publish(String(data=self.mission_type))
-        if self.start_timer is not None:
-            try:
-                self.start_timer.shutdown()
-            except Exception:
-                pass
+        with self.lock:
+            self.running = True
         self.start_timer = rospy.Timer(
-            rospy.Duration(0.20), self.publish_start_once, oneshot=True
+            rospy.Duration(self.start_lead_s), self.publish_start_once, oneshot=True
         )
         rospy.logwarn(
-            "Fake-car test start accepted. Mission=%s; car motion will %s.",
-            self.mission_type,
-            "begin at INTERCEPT" if self.auto_run_on_intercept else "remain stopped until /fake_car/run=True",
+            "Legacy fake-car start accepted: car is MOVING first; UAV /uav/start in %.2fs.",
+            self.start_lead_s,
         )
 
     def publish_start_once(self, _event):
+        self.start_timer = None
+        if self.fsm_state not in {"WAIT_START", "UNKNOWN"}:
+            with self.lock:
+                self.running = False
+            rospy.logerr("Legacy UAV START cancelled: FSM state=%s", self.fsm_state)
+            return
         self.start_pub.publish(Bool(data=True))
 
     def current_segment(self):
@@ -435,6 +600,10 @@ class RealFlightFakeCar:
             "vy": car["vy"],
             "target_speed_mps": self.current_target_speed() if self.running else 0.0,
             "yaw": car["yaw"],
+            "field_x_cm": car["field_x_cm"],
+            "field_y_cm": car["field_y_cm"],
+            "yaw_field_deg": car["yaw_field_deg"],
+            "coordinate_mode": self.track.coordinate_mode,
             "segment": car["segment"],
             "segment_progress": car["segment_progress"],
             "path_s": car["path_s"],
@@ -502,6 +671,11 @@ class RealFlightFakeCar:
             "telemetry_rate_hz": self.telemetry_rate_hz,
             "path_s_m": self.path_s,
             "track_total_m": self.track.total,
+            "field_x_cm": car["field_x_cm"],
+            "field_y_cm": car["field_y_cm"],
+            "coordinate_mode": self.track.coordinate_mode,
+            "a_local_x_m": self.track.a_x,
+            "a_local_y_m": self.track.a_y,
             "segment": car["segment"],
             "segment_progress": car["segment_progress"],
             "fsm_state": self.fsm_state,

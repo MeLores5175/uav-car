@@ -15,6 +15,7 @@ catkin_package()
 catkin_install_python(PROGRAMS
   scripts/air_ground_mission_fsm.py
   scripts/car_state_simulator.py
+  scripts/check_track_mapping.py
   scripts/car_udp_bridge.py
   scripts/drop_actuator_serial.py
   scripts/landing_marker_vision.py

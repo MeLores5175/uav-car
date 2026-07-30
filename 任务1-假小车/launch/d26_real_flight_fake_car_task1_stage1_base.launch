@@ -37,14 +37,17 @@
   <arg name="allow_legacy_format" default="false" />
 
   <!-- 虚拟小车参数 -->
-  <arg name="car_speed_ab" default="0.08" />
-  <arg name="car_speed_bc" default="0.06" />
-  <arg name="car_speed_cd" default="0.08" />
-  <arg name="car_speed_da" default="0.06" />
+  <arg name="car_speed_ab" default="0.05" />
+  <arg name="car_speed_bc" default="0.04" />
+  <arg name="car_speed_cd" default="0.05" />
+  <arg name="car_speed_da" default="0.04" />
   <arg name="car_telemetry_rate_hz" default="30.0" />
   <arg name="car_update_rate_hz" default="100.0" />
   <arg name="start_path_s" default="0.0" />
   <arg name="max_fake_vision_range_m" default="6.0" />
+  <!-- 正式题目时序：假小车先动，再延时通知无人机 START。 -->
+  <arg name="fake_car_start_before_uav" default="true" />
+  <arg name="fake_car_start_lead_s" default="0.25" />
 
   <!-- 与已验证 stage1_real_flight.launch 完全相同的 MAVROS 启动方式 -->
   <include if="$(arg start_mavros)"
@@ -101,6 +104,9 @@
     <param name="allow_legacy_format" value="$(arg allow_legacy_format)" />
     <param name="forced_task" value="T1" />
     <param name="car_telemetry_enabled" value="false" />
+    <param name="forward_ros_car_state_to_gs" value="true" />
+    <param name="ros_car_telemetry_rate_hz" value="10.0" />
+    <param name="fake_car_start_sequence_enabled" value="$(arg fake_car_start_before_uav)" />
     <param name="command_result_timeout_s" value="0.80" />
     <param name="status_max_age_s" value="0.80" />
     <param name="start_pose_max_age_s" value="0.30" />
@@ -126,7 +132,9 @@
     <param name="start_path_s" value="$(arg start_path_s)" />
     <param name="loop_track" value="false" />
 
-    <param name="auto_run_on_intercept" value="true" />
+    <param name="auto_run_on_intercept" value="false" />
+    <param name="auto_run_on_follow" value="false" />
+    <param name="start_lead_s" value="$(arg fake_car_start_lead_s)" />
     <param name="publish_fake_vision" value="true" />
     <param name="allow_dynamic_land_fake_vision" value="false" />
     <param name="max_fake_vision_range_m"

@@ -33,16 +33,19 @@ mission:
     # 无人机目标相对小车平台中心的水平偏置。0,0 表示正上方。
     offset_forward_m: 0.0
     offset_left_m: 0.0
+    # position+velocity setpoint 同时发送时，PX4 已自行对位置误差闭环。
+    # feedforward_only 仅把小车速度作为前馈，避免 FSM 再次对位置误差做 P/D，造成双重闭环蛇形。
+    velocity_setpoint_mode: feedforward_only   # feedforward_only 或 legacy_outer_pd
     velocity_feedforward_gain: 1.0
-    position_kp: 0.95
-    relative_velocity_kd: 0.35
+    position_kp: 0.95                          # 仅 legacy_outer_pd 使用
+    relative_velocity_kd: 0.35                # 仅 legacy_outer_pd 使用
     vertical_kp: 0.90
     max_horizontal_speed_mps: 1.20
     max_horizontal_accel_mps2: 0.80
     max_vertical_speed_mps: 0.45
     max_vertical_accel_mps2: 0.60
-    intercept_prediction_s: 0.60
-    follow_prediction_s: 0.18
+    intercept_prediction_s: 0.30
+    follow_prediction_s: 0.10
 
     acquire_position_error_m: 0.20
     acquire_relative_speed_mps: 0.18
@@ -64,6 +67,8 @@ mission:
     vision_min_confidence: 0.55
     vision_min_stable_count: 2
     car_state_is_relative_home: true
+    # 合成视觉与虚拟小车里程给出的是同一真值，不重复修正跟踪器速度。
+    fuse_synthetic_vision: false
 
   drop:
     # 任务一只在 C-D 直线段内下降和投放。
@@ -252,12 +257,19 @@ car_udp:
   auto_start_from_car: true
 
   # 当小车只发送 path_s / speed 时，使用下面的跑道模型换算位置。
-  # a_x/a_y 是 A 点相对 H 点的 Faster-LIO 坐标；ab_yaw 是 A->B 的方向。
+  # 虚拟小车优先直接使用 FIELD 坐标定义赛道，再通过 field_transform
+  # 自动换算为“以 H 为原点的 MAVROS local 坐标”，避免 x/y 人工互换出错。
+  # FIELD：左下角为 (0,0)，X 向右，Y 向上，单位 cm。
   track:
     enabled: true
-    a_x_m: 1.25                    # 必须现场标定
-    a_y_m: 0.75                    # 必须现场标定
-    ab_yaw_deg: 90.0               # 必须现场标定
+    coordinate_mode: field
+    a_field_x_cm: 150.0             # A 点 FIELD X
+    a_field_y_cm: 200.0             # A 点 FIELD Y
+    ab_field_yaw_deg: 90.0          # A->B 沿 FIELD +Y
+    # 以下 local 参数只作为旧配置兼容/诊断值。当前 H=(75,75)、local yaw=0 时应为 (0.75,1.25)。
+    a_x_m: 0.75
+    a_y_m: 1.25
+    ab_yaw_deg: 90.0
     straight_length_m: 1.50
     radius_m: 0.75
 

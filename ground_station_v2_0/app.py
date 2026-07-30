@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""陆空协同无人机系统 HTML 地面站（V1.9 调试版）
+"""陆空协同无人机系统 HTML 地面站（V2.0 坐标修正版）
 
 功能：
 - aiohttp 本地网页服务 + 原生 WebSocket 实时推送；
@@ -25,6 +25,7 @@ import logging
 import os
 import shutil
 import time
+import secrets
 import webbrowser
 from collections import deque
 from pathlib import Path
@@ -67,6 +68,9 @@ class GroundStation:
         self.udp_transport: Optional[asyncio.DatagramTransport] = None
         self.ws_clients: set[web.WebSocketResponse] = set()
         self.pending: Dict[str, Dict[str, Any]] = {}
+        # 每次地面站进程启动使用新的会话前缀，避免无人机端去重缓存
+        # 把重启后的 0001/0002 误认为上一轮命令重发。
+        self.session_id = f"{int(time.time()) % 100000:05d}{secrets.randbelow(100):02d}"
         self.command_counter = 0
         self.run_counter = 0
         self.log_counter = 0
@@ -212,11 +216,14 @@ class GroundStation:
         self.command_counter = (self.command_counter + 1) % 10000
         if self.command_counter == 0:
             self.command_counter = 1
-        return f"{self.command_counter:04d}"
+        # 协议允许 1~24 位字母数字/下划线/连字符。
+        return f"{self.session_id}{self.command_counter:04d}"
 
     def next_run_id(self) -> str:
-        self.run_counter += 1
-        return f"R{self.run_counter:03d}"
+        self.run_counter = (self.run_counter + 1) % 1000
+        if self.run_counter == 0:
+            self.run_counter = 1
+        return f"R{self.session_id}{self.run_counter:03d}"
 
     def send_raw(self, device: str, text: str) -> None:
         if not self.udp_transport:
@@ -320,10 +327,25 @@ class GroundStation:
 
     def _handle_ack_or_err(self, prefix: str, parts: list[str], source: str, raw: str) -> None:
         # V1.1: ACK:<cmd_id>:<action>:<result>[:detail]
-        if len(parts) >= 4 and parts[1].isdigit():
+        if len(parts) >= 4 and parts[1]:
             cmd_id, action, result = parts[1], parts[2].upper(), parts[3]
             detail = ":".join(parts[4:])
-            pending = self.pending.pop(cmd_id, None)
+            pending = self.pending.get(cmd_id)
+
+            # 不能只按 cmd_id 删除待确认命令：还必须校验回包设备与 action，
+            # 防止延迟包、编号碰撞或其他设备回包误确认关键命令。
+            if pending:
+                expected_source = str(pending["device"]).upper()
+                expected_action = str(pending["action"]).upper()
+                if source != expected_source or action != expected_action:
+                    self.add_log(
+                        "WARN", source,
+                        f"忽略不匹配回包：cmd_id={cmd_id}，收到 {action}，"
+                        f"期望 {expected_source}/{expected_action}",
+                    )
+                    return
+                self.pending.pop(cmd_id, None)
+
             if prefix == "ACK":
                 self.add_log("OK", source, f"{action} {result}" + (f"：{detail}" if detail else ""))
             else:
@@ -403,12 +425,39 @@ class GroundStation:
         data = json.loads(payload)
         if not isinstance(data, dict):
             raise ValueError("TEL JSON 不是对象")
+
+        current = self.state[device]["telemetry"]
+        incoming_seq = data.get("seq")
+        current_seq = current.get("seq")
+        incoming_run = str(data.get("run", ""))
+        current_run = str(current.get("run", ""))
+        try:
+            incoming_seq_i = int(incoming_seq) if incoming_seq is not None else None
+            current_seq_i = int(current_seq) if current_seq is not None else None
+        except (TypeError, ValueError):
+            incoming_seq_i = current_seq_i = None
+
+        # 同一运行编号内拒绝旧序号覆盖新位置。设备重启时 seq 通常回到 1，
+        # 只有“旧序号很大、新序号很小”才视为明确重启并重新接受。
+        if (
+            incoming_seq_i is not None and current_seq_i is not None
+            and incoming_run == current_run and incoming_seq_i <= current_seq_i
+        ):
+            clear_reboot = current_seq_i >= 50 and incoming_seq_i <= 5
+            if not clear_reboot:
+                return
+
         self._mark_seen(device, f"TEL:{device.upper()}")
-        self.state[device]["telemetry"].update(data)
-        # 任务选择只由地面站操作决定。设备遥测中的 task 仅用于状态显示，
-        # 避免设备默认模式反复覆盖用户尚未提交的网页选择。
+        current.update(data)
+        # 任务选择只由地面站操作决定。设备遥测中的 task 仅用于状态显示。
         if data.get("run"):
             self.state["mission"]["run_id"] = str(data["run"])
+        mission_result = str(data.get("mission_result", "")).upper()
+        if mission_result:
+            if mission_result == "MISSION_COMPLETE":
+                self.state["mission"]["status"] = "DONE"
+            elif "ABORT" in mission_result:
+                self.state["mission"]["status"] = "ABORTED"
         self.mark_dirty()
 
     def _handle_vision(self, payload: str, source: str) -> None:
@@ -609,7 +658,7 @@ class GroundStation:
         body = await self._json_body(request)
         action = str(body.get("action", "")).strip().upper()
         task = str(body.get("task", "")).strip().upper()
-        allowed = {"PING", "STATUS", "BOOT", "START", "LAND", "RESET", "STOP_NODES"}
+        allowed = {"PING", "STATUS", "BOOT", "START", "LAND", "RESET"}
         if action not in allowed:
             return web.json_response(
                 {"ok": False, "error": f"不允许的无人机调试命令：{action or '空'}"},
@@ -619,7 +668,7 @@ class GroundStation:
 
         uav_tel = self.state.get("uav", {}).get("telemetry", {})
         armed = uav_tel.get("armed") is True
-        if armed and action in {"BOOT", "RESET", "STOP_NODES"}:
+        if armed and action in {"BOOT", "RESET"}:
             return web.json_response(
                 {"ok": False, "error": f"无人机已解锁，禁止发送 {action}"},
                 status=409,
@@ -655,13 +704,10 @@ class GroundStation:
         elif action == "RESET":
             self.state["mission"].update({"run_id": "", "status": "IDLE", "last_event": ""})
             self.state["selected_task"] = None
-        elif action == "STOP_NODES":
-            # 仅落地且未解锁时允许；已在上方拦截 armed=True。
-            pass
 
         cmd_id = self.send_command("uav", action, args, emergency=emergency)
         detail = ":".join(args)
-        level = "ERROR" if action == "LAND" else "WARN" if action in {"START", "STOP_NODES"} else "INFO"
+        level = "ERROR" if action == "LAND" else "WARN" if action == "START" else "INFO"
         self.add_log(
             level,
             "DEBUG",
@@ -738,8 +784,11 @@ class GroundStation:
         return web.json_response({"ok": True, "uav_cmd_id": uav_id, "car_cmd_id": car_id})
 
     async def api_stop_nodes(self, request: web.Request) -> web.Response:
-        cmd_id = self.send_command("uav", "STOP_NODES")
-        return web.json_response({"ok": True, "cmd_id": cmd_id})
+        return web.json_response(
+            {"ok": False, "error": "实飞网关已禁用 STOP_NODES；请在飞机落地后通过 Jetson 终端管理节点。"},
+            status=410,
+            dumps=lambda x: json.dumps(x, ensure_ascii=False),
+        )
 
     async def api_clear_trails(self, request: web.Request) -> web.Response:
         await self.broadcast({"type": "clear_trails"})
@@ -752,7 +801,7 @@ class GroundStation:
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
-        response.headers["X-Ground-Station-Version"] = "1.9-debug"
+        response.headers["X-Ground-Station-Version"] = "2.0-coordinate-fix"
         return response
 
     async def index(self, request: web.Request) -> web.FileResponse:

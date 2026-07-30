@@ -217,6 +217,17 @@ class UavUdpGateway:
         self.car_telemetry_enabled = bool(
             rospy.get_param("~car_telemetry_enabled", True)
         )
+        self.forward_ros_car_state_to_gs = bool(
+            rospy.get_param("~forward_ros_car_state_to_gs", not self.car_telemetry_enabled)
+        )
+        # 假小车联调时，GS 的 START 不直接交给 FSM，而是先让假小车运动，
+        # 再由假小车延时转发同一条 mission_command。
+        self.fake_car_start_sequence_enabled = bool(
+            rospy.get_param("~fake_car_start_sequence_enabled", False)
+        )
+        self.ros_car_telemetry_rate_hz = max(
+            1.0, safe_float(rospy.get_param("~ros_car_telemetry_rate_hz", 10.0), 10.0)
+        )
         self.forced_task = normalize_task(rospy.get_param("~forced_task", ""))
         self.allow_legacy = bool(
             rospy.get_param(
@@ -267,6 +278,15 @@ class UavUdpGateway:
         self.mission_type_pub = rospy.Publisher("/uav/mission_type", String, queue_size=10)
         self.land_pub = rospy.Publisher("/uav/land", Bool, queue_size=10)
         self.reset_pub = rospy.Publisher("/uav/reset", Bool, queue_size=10)
+        self.fake_car_start_sequence_pub = None
+        self.fake_car_run_pub = None
+        if self.fake_car_start_sequence_enabled:
+            self.fake_car_start_sequence_pub = rospy.Publisher(
+                "/fake_car/start_sequence", String, queue_size=5
+            )
+            self.fake_car_run_pub = rospy.Publisher(
+                "/fake_car/run", Bool, queue_size=5
+            )
 
         # 状态字段必须在创建订阅者前初始化，避免回调抢先触发。
         self.latest_status = {}
@@ -282,6 +302,8 @@ class UavUdpGateway:
         self.run_start_monotonic = None
         self.hb_seq = 0
         self.tel_seq = 0
+        self.fake_car_tel_seq = 0
+        self.last_fake_car_tel = 0.0
         self.last_hb = 0.0
         self.last_tel = 0.0
         self.dedup = OrderedDict()
@@ -300,6 +322,8 @@ class UavUdpGateway:
             "/mavros/local_position/pose", PoseStamped, self.pose_cb, queue_size=30
         )
         rospy.Subscriber("/mavros/battery", BatteryState, self.battery_cb, queue_size=10)
+        if self.forward_ros_car_state_to_gs:
+            rospy.Subscriber("/car/state", String, self.ros_car_state_cb, queue_size=30)
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -324,7 +348,7 @@ class UavUdpGateway:
         rospy.logwarn(
             "UDP V%s gateway listening %s:%d, GS=%s, CAR=%s, "
             "STRICT_SOURCE_IP=%s, GS_DIRECT_START=%s, CAR_TELEMETRY=%s, "
-            "FORCED_TASK=%s, POSE_MAX_AGE=%.2fs, STATUS_MAX_AGE=%.2fs",
+            "FORCED_TASK=%s, FAKE_CAR_SEQUENCE=%s, POSE_MAX_AGE=%.2fs, STATUS_MAX_AGE=%.2fs",
             self.proto,
             self.listen_ip,
             self.listen_port,
@@ -334,6 +358,7 @@ class UavUdpGateway:
             self.allow_gs_direct_start,
             self.car_telemetry_enabled,
             self.forced_task or "ANY",
+            self.fake_car_start_sequence_enabled,
             self.start_pose_max_age_s,
             self.status_max_age_s,
         )
@@ -365,6 +390,57 @@ class UavUdpGateway:
             value *= 100.0
         if 0.0 <= value <= 100.0:
             self.battery_percent = int(round(value))
+
+    def ros_car_state_cb(self, msg):
+        """假小车模式下只转发 ROS /car/state 到地面站，不回写 /car/state。"""
+        if not self.forward_ros_car_state_to_gs:
+            return
+        now = time.monotonic()
+        if now - self.last_fake_car_tel < 1.0 / self.ros_car_telemetry_rate_hz:
+            return
+        try:
+            data = json.loads(msg.data)
+        except Exception:
+            return
+        if str(data.get("source", "")) != "real_flight_fake_car":
+            return
+        x_local = safe_float(data.get("x", 0.0), 0.0)
+        y_local = safe_float(data.get("y", 0.0), 0.0)
+        x_field, y_field = self.transform.local_to_field_xy(x_local, y_local)
+        vx_field, vy_field = self.transform.local_to_field_vector(
+            safe_float(data.get("vx", 0.0), 0.0), safe_float(data.get("vy", 0.0), 0.0)
+        )
+        self.fake_car_tel_seq += 1
+        self.last_fake_car_tel = now
+        speed = math.hypot(vx_field, vy_field)
+        payload = {
+            "proto": self.proto,
+            "seq": self.fake_car_tel_seq,
+            "time_ms": int(max(0.0, now - (self.run_start_monotonic or now)) * 1000.0),
+            "run": self.run_id,
+            "task": 1,
+            "state": "RUNNING" if bool(data.get("running", False)) else "READY",
+            "x_cm": round(x_field * 100.0, 1),
+            "y_cm": round(y_field * 100.0, 1),
+            "speed_cm_s": round(speed * 100.0, 1),
+            "yaw_deg": round(self.transform.local_to_field_yaw_deg(
+                safe_float(data.get("yaw", 0.0), 0.0)
+            ), 1),
+            "point": str(data.get("segment", "")),
+            "segment": str(data.get("segment", "UNKNOWN")),
+            "segment_progress": safe_float(data.get("segment_progress", -1.0), -1.0),
+            "path_s_cm": round(safe_float(data.get("path_s", 0.0), 0.0) * 100.0, 1),
+            "line_detected": True,
+            "battery": -1,
+            "error": 0,
+            "source": "real_flight_fake_car",
+        }
+        target = self.get_ground_station_addr()
+        if target is not None:
+            self.send_text(
+                "TEL:CAR:" + json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                target,
+            )
 
     def command_result_cb(self, msg):
         try:
@@ -666,9 +742,19 @@ class UavUdpGateway:
                         "source": role,
                         "legacy": legacy,
                     }
-                    self.command_pub.publish(
-                        String(data=json.dumps(command, separators=(",", ":")))
-                    )
+                    command_text = json.dumps(command, separators=(",", ":"))
+                    if (
+                        self.fake_car_start_sequence_enabled
+                        and role in {"GS", "DEBUG"}
+                        and self.fake_car_start_sequence_pub is not None
+                    ):
+                        # 模拟正式流程：假小车先动，再转发同一 START 给 FSM。
+                        self.fake_car_start_sequence_pub.publish(String(data=command_text))
+                        rospy.logwarn(
+                            "GS START routed through fake-car sequence: car first, UAV second"
+                        )
+                    else:
+                        self.command_pub.publish(String(data=command_text))
                     result = self.wait_command_result(cmd_id)
                     if result is None:
                         # 不缓存不确定结果。若 FSM 稍后已启动，重发会由
@@ -704,6 +790,8 @@ class UavUdpGateway:
                     reply = self.ack(cmd_id, action, "ACCEPTED", run_id)
                     self.cache_reply(key, reply)
                     self.send_text(reply, addr)
+                    if self.fake_car_run_pub is not None:
+                        self.fake_car_run_pub.publish(Bool(data=False))
                     threading.Thread(
                         target=self.publish_land_burst,
                         name="uav_udp_land_burst",
@@ -721,6 +809,8 @@ class UavUdpGateway:
                 reply = self.err(cmd_id, action, "BUSY", self.fsm_state() or "FSM")
             else:
                 self.reset_pub.publish(Bool(data=True))
+                if self.fake_car_run_pub is not None:
+                    self.fake_car_run_pub.publish(Bool(data=False))
                 self.run_id = "R000"
                 self.run_start_monotonic = None
                 self.boot_state = "STARTING" if self.boot_task else "STOPPED"
@@ -886,7 +976,8 @@ class UavUdpGateway:
         if detail == "EMERGENCY_LAND":
             return "LAND_HOME"
         if detail == "WAIT_RESET":
-            return "DONE"
+            result = str(status.get("mission_result", "")).upper()
+            return "DONE" if result == "MISSION_COMPLETE" else "ABORTED"
         return detail
 
     @staticmethod
@@ -946,6 +1037,13 @@ class UavUdpGateway:
             "yaw_deg": round(yaw_deg, 1),
             "battery": self.battery_percent,
             "target_locked": bool(vision.get("valid", False) or tracking.get("valid", False)),
+            "fsm_state": str(status.get("fsm_state", "")),
+            "mission_result": str(status.get("mission_result", "")),
+            "abort_reason": abort_reason,
+            "tracking_error_cm": round(safe_float(tracking.get("position_error_m"), 0.0) * 100.0, 1)
+                if tracking.get("position_error_m") is not None else None,
+            "target_x_local_m": tracking.get("target_x"),
+            "target_y_local_m": tracking.get("target_y"),
             "error": 0 if not abort_reason else 1,
         }
 

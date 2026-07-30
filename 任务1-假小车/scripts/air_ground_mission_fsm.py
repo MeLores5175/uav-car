@@ -211,6 +211,9 @@ class AirGroundMissionFSM:
         self.car_state_is_relative_home = bool(
             self.est_cfg.get("car_state_is_relative_home", True)
         )
+        self.fuse_synthetic_vision = bool(
+            self.est_cfg.get("fuse_synthetic_vision", False)
+        )
 
         self.current_state = State()
         self.extended_state = ExtendedState()
@@ -848,15 +851,25 @@ class AirGroundMissionFSM:
             self.last_processed_car_version = self.car_version
 
         vision = self.vision_abs_measurement()
+        vision_source = str(self.vision_data.get("source", "")).lower()
+        synthetic_duplicate = (
+            vision is not None and telemetry is not None
+            and "synthetic" in vision_source and not self.fuse_synthetic_vision
+        )
         if vision is not None and self.vision_version != self.last_processed_vision_version:
-            if not self.tracker.initialized:
+            if synthetic_duplicate:
+                # 假小车里程和合成视觉来自同一几何真值。视觉仍用于“已锁定/可下降”门槛，
+                # 但不再第二次修正 Alpha-Beta 跟踪器，避免速度估计被重复测量扰动。
+                self.last_processed_vision_version = self.vision_version
+            elif not self.tracker.initialized:
                 self.tracker.initialize(vision["x"], vision["y"], 0.0, 0.0, now_sec)
+                self.last_processed_vision_version = self.vision_version
             else:
                 alpha = self.vision_position_alpha * clamp(vision["confidence"], 0.4, 1.0)
                 self.tracker.correct_position(
                     vision["x"], vision["y"], alpha, self.position_beta, dt
                 )
-            self.last_processed_vision_version = self.vision_version
+                self.last_processed_vision_version = self.vision_version
 
         if not self.tracker.initialized:
             self.car_estimate = None
@@ -964,10 +977,19 @@ class AirGroundMissionFSM:
         evy = car["vy"] - self.current_vel[1]
 
         ff = safe_float(self.follow_cfg.get("velocity_feedforward_gain", 1.0), 1.0)
-        kp = safe_float(self.follow_cfg.get("position_kp", 0.95), 0.95)
-        kd = safe_float(self.follow_cfg.get("relative_velocity_kd", 0.35), 0.35)
-        desired_vx = ff * car["vx"] + kp * ex + kd * evx
-        desired_vy = ff * car["vy"] + kp * ey + kd * evy
+        velocity_mode = str(
+            self.follow_cfg.get("velocity_setpoint_mode", "feedforward_only")
+        ).strip().lower()
+        if velocity_mode == "legacy_outer_pd":
+            kp = safe_float(self.follow_cfg.get("position_kp", 0.95), 0.95)
+            kd = safe_float(self.follow_cfg.get("relative_velocity_kd", 0.35), 0.35)
+            desired_vx = ff * car["vx"] + kp * ex + kd * evx
+            desired_vy = ff * car["vy"] + kp * ey + kd * evy
+        else:
+            # PositionTarget 同时携带目标位置和速度时，PX4 会用位置误差闭环，
+            # 速度字段应只作为移动目标前馈，避免外层 P/D 与 PX4 内环重复控制。
+            desired_vx = ff * car["vx"]
+            desired_vy = ff * car["vy"]
 
         max_speed = safe_float(
             self.follow_cfg.get("max_horizontal_speed_mps", 1.20), 1.20

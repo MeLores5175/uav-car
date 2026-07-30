@@ -10,13 +10,14 @@ const ui = {
   uavResetBtn: document.getElementById("uavResetBtn"),
   directStartBtn: document.getElementById("directStartBtn"),
   directStartHint: document.getElementById("directStartHint"),
-  stopNodesBtn: document.getElementById("stopNodesBtn"),
   landSlider: document.getElementById("landSlider"),
   landSliderCard: document.getElementById("landSliderCard"),
   landSliderHint: document.getElementById("landSliderHint"),
   clearTrailBtn: document.getElementById("clearTrailBtn"),
   uavMarker: document.getElementById("uavMarker"),
   uavTrail: document.getElementById("uavTrail"),
+  carMarker: document.getElementById("carMarker"),
+  carTrail: document.getElementById("carTrail"),
   logList: document.getElementById("logList"),
   toast: document.getElementById("toast"),
 };
@@ -25,8 +26,10 @@ let selectedTask = "T1";
 let socket = null;
 let reconnectTimer = null;
 let toastTimer = null;
-let trailPoints = [];
-let lastTrailKey = "";
+let uavTrailPoints = [];
+let carTrailPoints = [];
+let lastUavTrailKey = "";
+let lastCarTrailKey = "";
 let landSending = false;
 let startHoldTimer = null;
 let startHoldTick = null;
@@ -104,7 +107,8 @@ async function sendUavCommand(action) {
   if (action === "BOOT" || action === "START") body.task = selectedTask;
   const data = await post("/api/debug/uav_command", body);
   lastDebugCommand = `CMD:${data.cmd_id}:${action}`;
-  if (data.run_id) lastDebugCommand += `:${data.run_id}:${selectedTask}`;
+  if (action === "START" && data.run_id) lastDebugCommand += `:${data.run_id}:${selectedTask}`;
+  else if (action === "LAND" && data.run_id) lastDebugCommand += `:${data.run_id}`;
   else if (action === "BOOT") lastDebugCommand += `:${selectedTask}`;
   setText("lastDebugCommand", lastDebugCommand);
   if (data.run_id) setText("debugRunId", data.run_id);
@@ -163,19 +167,21 @@ function render(data) {
   setText("uavArmed", boolText(tel.armed));
   setText("uavFcu", boolText(tel.fcu));
   setText("uavBattery", fmt(tel.battery, 0, "%"));
+  setText("missionResult", tel.mission_result || "--");
+  setText("abortReason", tel.abort_reason || "--");
+  setText("trackingError", fmt(tel.tracking_error_cm, 1, " cm"));
+  setText("uavFsmDetail", tel.fsm_state || "--");
   setText("debugRunId", data.mission?.run_id || "--");
   setText("pendingCommands", String((data.pending || []).filter((x) => x.device === "uav").length));
 
   const armed = tel.armed === true;
-  ui.stopNodesBtn.disabled = armed;
   ui.uavResetBtn.disabled = armed;
   ui.uavBootBtn.disabled = armed;
-  ui.stopNodesBtn.title = armed ? "无人机已解锁，禁止停止节点" : "仅在落地且未解锁时使用";
 
   const net = data.network || {};
   const uav = net.uav || {};
   setText("networkSummary", `GS UDP ${net.gs_port ?? "--"} · UAV ${uav.ip ?? "--"}:${uav.port ?? "--"}`);
-  renderMap(tel);
+  renderMap(tel, data.car?.telemetry || {});
   renderLogs(data.logs || []);
 }
 
@@ -186,42 +192,59 @@ function fieldToLandscape(xCm, yCm) {
   return { sx: Math.max(0, Math.min(500, y)), sy: Math.max(0, Math.min(400, x)) };
 }
 
-function renderMap(tel) {
-  const point = fieldToLandscape(tel.x_cm, tel.y_cm);
+function updateMarker(element, point, yawDeg) {
   if (!point) {
-    ui.uavMarker.classList.add("hidden");
-  } else {
-    ui.uavMarker.classList.remove("hidden");
-    const yaw = numberValue(tel.yaw_deg) ?? 0;
-    const angle = 90 - yaw;
-    ui.uavMarker.setAttribute("transform", `translate(${point.sx} ${point.sy}) rotate(${angle})`);
-    const text = ui.uavMarker.querySelector(".marker-label");
-    if (text) text.setAttribute("transform", `rotate(${-angle})`);
-    updateTrail(point, tel.seq);
+    element.classList.add("hidden");
+    return;
   }
-
-  const x = numberValue(tel.x_cm);
-  const y = numberValue(tel.y_cm);
-  const z = numberValue(tel.z_cm);
-  setText("uavPosition", x === null || y === null ? "--" : `X ${x.toFixed(1)} / Y ${y.toFixed(1)} / Z ${z?.toFixed(1) ?? "--"} cm`);
+  element.classList.remove("hidden");
+  const yaw = numberValue(yawDeg) ?? 0;
+  const angle = 90 - yaw;
+  element.setAttribute("transform", `translate(${point.sx} ${point.sy}) rotate(${angle})`);
+  const text = element.querySelector(".marker-label");
+  if (text) text.setAttribute("transform", `rotate(${-angle})`);
 }
 
-function updateTrail(point, seq) {
+function appendTrail(list, point, seq, device) {
   const key = `${seq ?? ""}:${point.sx.toFixed(2)}:${point.sy.toFixed(2)}`;
-  if (key === lastTrailKey) return;
-  lastTrailKey = key;
-  const last = trailPoints[trailPoints.length - 1];
-  if (!last || Math.hypot(last.sx - point.sx, last.sy - point.sy) >= 0.5) {
-    trailPoints.push(point);
-    if (trailPoints.length > 600) trailPoints.splice(0, trailPoints.length - 600);
-    ui.uavTrail.setAttribute("points", trailPoints.map((p) => `${p.sx},${p.sy}`).join(" "));
+  if (device === "uav") {
+    if (key === lastUavTrailKey) return;
+    lastUavTrailKey = key;
+  } else {
+    if (key === lastCarTrailKey) return;
+    lastCarTrailKey = key;
   }
+  const last = list[list.length - 1];
+  if (!last || Math.hypot(last.sx - point.sx, last.sy - point.sy) >= 0.5) {
+    list.push(point);
+    if (list.length > 600) list.splice(0, list.length - 600);
+  }
+}
+
+function renderMap(tel, car) {
+  const uavPoint = fieldToLandscape(tel.x_cm, tel.y_cm);
+  const carPoint = fieldToLandscape(car.x_cm, car.y_cm);
+  updateMarker(ui.uavMarker, uavPoint, tel.yaw_deg);
+  updateMarker(ui.carMarker, carPoint, car.yaw_deg);
+  if (uavPoint) appendTrail(uavTrailPoints, uavPoint, tel.seq, "uav");
+  if (carPoint) appendTrail(carTrailPoints, carPoint, car.seq, "car");
+  ui.uavTrail.setAttribute("points", uavTrailPoints.map((p) => `${p.sx},${p.sy}`).join(" "));
+  ui.carTrail.setAttribute("points", carTrailPoints.map((p) => `${p.sx},${p.sy}`).join(" "));
+
+  const x = numberValue(tel.x_cm), y = numberValue(tel.y_cm), z = numberValue(tel.z_cm);
+  const cx = numberValue(car.x_cm), cy = numberValue(car.y_cm);
+  setText("uavPosition", x === null || y === null ? "--" : `X ${x.toFixed(1)} / Y ${y.toFixed(1)} / Z ${z?.toFixed(1) ?? "--"} cm`);
+  setText("carPosition", cx === null || cy === null ? "--" : `X ${cx.toFixed(1)} / Y ${cy.toFixed(1)} cm`);
+  setText("relativeDistance", x === null || y === null || cx === null || cy === null ? "--" : `${Math.hypot(x-cx, y-cy).toFixed(1)} cm`);
 }
 
 function clearTrail() {
-  trailPoints = [];
-  lastTrailKey = "";
+  uavTrailPoints = [];
+  carTrailPoints = [];
+  lastUavTrailKey = "";
+  lastCarTrailKey = "";
   ui.uavTrail.setAttribute("points", "");
+  ui.carTrail.setAttribute("points", "");
 }
 
 function escapeHtml(value) {
@@ -234,7 +257,7 @@ function renderLogs(logs) {
   const filtered = logs.filter((item) => {
     const source = String(item.source || "").toUpperCase();
     const text = String(item.text || "").toUpperCase();
-    return source === "UAV" || source === "GS" || source === "DEBUG" || text.includes("UAV") || text.includes("无人机");
+    return source === "UAV" || source === "CAR" || source === "GS" || source === "DEBUG" || text.includes("UAV") || text.includes("无人机") || text.includes("假小车");
   });
   if (!filtered.length) {
     ui.logList.innerHTML = '<div class="empty-log">等待无人机通信数据……</div>';
@@ -282,10 +305,6 @@ ui.uavResetBtn.addEventListener("click", async () => {
   await sendUavCommand("RESET");
   clearTrail();
   showToast("已单独向无人机发送 RESET");
-});
-ui.stopNodesBtn.addEventListener("click", async () => {
-  await sendUavCommand("STOP_NODES");
-  showToast("已向无人机发送 STOP_NODES", true);
 });
 ui.clearTrailBtn.addEventListener("click", async () => {
   clearTrail();
