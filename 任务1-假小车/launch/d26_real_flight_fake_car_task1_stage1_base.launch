@@ -37,10 +37,10 @@
   <arg name="allow_legacy_format" default="false" />
 
   <!-- 虚拟小车参数 -->
-  <arg name="car_speed_ab" default="0.05" />
-  <arg name="car_speed_bc" default="0.04" />
-  <arg name="car_speed_cd" default="0.05" />
-  <arg name="car_speed_da" default="0.04" />
+  <arg name="car_speed_ab" default="0.15" />
+  <arg name="car_speed_bc" default="0.15" />
+  <arg name="car_speed_cd" default="0.15" />
+  <arg name="car_speed_da" default="0.15" />
   <arg name="car_telemetry_rate_hz" default="50.0" />
   <arg name="car_update_rate_hz" default="100.0" />
   <arg name="car_max_accel_mps2" default="0.15" />
