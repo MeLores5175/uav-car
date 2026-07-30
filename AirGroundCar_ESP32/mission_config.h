@@ -8,10 +8,10 @@
 namespace CarConfig {
 
 // 当前阶段使用仿真后端。接入真实步进驱动后再改为 false。
-constexpr bool USE_SIMULATION = true;
+constexpr bool USE_SIMULATION = false;
 
 constexpr bool ENABLE_WIFI_UDP = true;
-constexpr bool ALLOW_REMOTE_START = USE_SIMULATION;
+constexpr bool ALLOW_REMOTE_START = true;
 
 constexpr uint32_t CONTROL_PERIOD_MS = 20;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 200;
@@ -43,8 +43,22 @@ constexpr float WHEELBASE_CM = 53.75f;
 constexpr float BOARD_TO_REAR_CM = 27.50f;
 constexpr float BOARD_TO_FRONT_CM = 26.25f;
 
-// 仍为占位值：必须在电机、驱动器细分和传动比确定后重新填写。
-constexpr float STEPPER_PULSES_PER_REV = 3200.0f;
+// ==================== Stepper driver ====================
+// 0.0f means not calibrated yet; the stepper backend will not output pulses.
+constexpr float STEPPER_PULSES_PER_REV = 0.0f;
+constexpr uint32_t STEPPER_MAX_PULSE_HZ = 5000;
+
+constexpr uint8_t LEFT_STP = 26;
+constexpr uint8_t LEFT_DIR = 27;
+constexpr uint8_t LEFT_EN = 25;
+constexpr uint8_t RIGHT_STP = 19;
+constexpr uint8_t RIGHT_DIR = 21;
+constexpr uint8_t RIGHT_EN = 18;
+
+constexpr uint8_t STEPPER_EN_ENABLE_LEVEL = LOW;
+constexpr uint8_t STEPPER_EN_DISABLE_LEVEL = HIGH;
+constexpr uint8_t STEPPER_FORWARD_DIR_LEVEL = HIGH;
+constexpr uint8_t STEPPER_REVERSE_DIR_LEVEL = LOW;
 
 // ==================== 板中心建模参数 ====================
 // 板中心位置误差的运动学反馈增益，不是电机 PID。
@@ -63,6 +77,7 @@ constexpr float ROUTE_COMPLETE_POSITION_TOLERANCE_CM = 0.5f;
 
 // 以后接实体按键时再开启并修改引脚。
 constexpr bool USE_LOCAL_START_BUTTON = false;
+// GPIO27 is currently LEFT_DIR; keep the local button disabled until reassigned.
 constexpr uint8_t LOCAL_START_PIN = 27;
 
 extern const char* WIFI_SSID;

@@ -20,6 +20,7 @@ void Telemetry::publish(uint32_t nowMs,
         odometry.boardPose(CarConfig::BOARD_TO_REAR_CM);
     const BoardReference& reference = route.reference();
     const WheelState& wheels = drive.wheelState();
+    const StepperDriverStatus& stepper = drive.stepperStatus();
     const uint32_t elapsedMs = mission.isRunning()
         ? nowMs - mission.startTimeMs()
         : 0;
@@ -47,7 +48,10 @@ void Telemetry::publish(uint32_t nowMs,
              "\"left_distance_cm\":%.2f,"
              "\"right_distance_cm\":%.2f,"
              "\"position_source\":\"wheel_odometry_board_center\","
-             "\"backend\":\"%s\",\"driver_alarm\":%s,"
+             "\"backend\":\"%s\",\"driver_ready\":%s,"
+             "\"stepper_config_valid\":%s,"
+             "\"stepper_pulse_generator_ready\":%s,"
+             "\"driver_alarm\":%s,"
              "\"error\":0}",
              (unsigned long)++telemetrySequence_,
              (unsigned long)elapsedMs,
@@ -74,6 +78,9 @@ void Telemetry::publish(uint32_t nowMs,
              odometry.leftDistanceCm(),
              odometry.rightDistanceCm(),
              backendName(drive.type()),
+             drive.isReady() ? "true" : "false",
+             stepper.configValid ? "true" : "false",
+             stepper.pulseGeneratorReady ? "true" : "false",
              drive.hasAlarm() ? "true" : "false");
 
     udp.sendToGroundStation(String(json));

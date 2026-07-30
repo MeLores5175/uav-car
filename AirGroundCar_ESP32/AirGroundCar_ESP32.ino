@@ -189,7 +189,7 @@ void setup()
     const DriveBackendType backendType = CarConfig::USE_SIMULATION
         ? DriveBackendType::SIMULATION
         : DriveBackendType::STEPPER;
-    driveBackend.begin(backendType);
+    const bool driveBackendReady = driveBackend.begin(backendType);
 
     odometry.begin(0.0f, 0.0f, 0.0f);
     resetOdometryToStart();
@@ -210,7 +210,41 @@ void setup()
     Serial.println("1=T1, 2=T2, A=arm, S=local start, 0=reset, P=status");
     Serial.println(CarConfig::USE_SIMULATION
         ? "backend=SIMULATION"
-        : "backend=STEPPER (driver is still a stub)");
+        : "backend=STEPPER (LEDC pulse driver)");
+
+    if (!driveBackendReady) {
+        Serial.println("[DRIVE][ERROR] backend initialization failed; motor output is disabled");
+
+        if (backendType == DriveBackendType::STEPPER) {
+            const StepperDriverStatus& status = driveBackend.stepperStatus();
+            Serial.printf(
+                "[DRIVE][STATUS] begun=%s config_valid=%s pulse_generator_ready=%s "
+                "left_attached=%s right_attached=%s\n",
+                status.begun ? "true" : "false",
+                status.configValid ? "true" : "false",
+                status.pulseGeneratorReady ? "true" : "false",
+                status.left.pulseGeneratorAttached ? "true" : "false",
+                status.right.pulseGeneratorAttached ? "true" : "false");
+
+            if (!status.configValid) {
+                Serial.printf(
+                    "[DRIVE][ERROR] invalid stepper calibration: "
+                    "wheel_diameter_cm=%.3f, pulses_per_rev=%.3f; "
+                    "set STEPPER_PULSES_PER_REV > 0 after calibration\n",
+                    CarConfig::WHEEL_DIAMETER_CM,
+                    CarConfig::STEPPER_PULSES_PER_REV);
+            }
+
+            if (!status.pulseGeneratorReady) {
+                Serial.println(
+                    "[DRIVE][ERROR] LEDC pulse generator attach failed; "
+                    "check ESP32 Arduino core compatibility and STEP pins");
+            }
+        }
+    } else {
+        Serial.println("[DRIVE] backend initialization ready");
+    }
+
     Serial.printf("start board=(%.2f, %.2f), rear offset=%.2f cm\n",
                   CarConfig::START_BOARD_X_CM,
                   CarConfig::START_BOARD_Y_CM,
