@@ -1,0 +1,512 @@
+# `platform_vision_node.py` 视觉节点说明
+
+## 1. 节点目标
+
+该节点是 FS-J310 无人机下视相机的统一移动平台视觉节点。
+
+它将两类算法放在同一个进程、同一台相机、同一帧图像中运行：
+
+```text
+YOLOv8s TensorRT
+  └─ 远距离发现 50 cm 官方大靶标
+  └─ AprilTag 丢失后的重捕获
+  └─ 粗略平台中心
+
+Tag25h9
+  └─ 近距离高精度中心
+  └─ 投放/动态降落精修
+  └─ ID、decision margin、hamming 质量检查
+```
+
+Faster-LIO 或 MAVROS local pose 提供无人机自身运动。节点保存位姿历史，按照图像采集时间选择最接近的 UAV 位姿，将机体系相对测量转换为 local 坐标。
+
+---
+
+## 2. 当前版本的关键约定
+
+相机方向已经现场确认：
+
+```text
+图像上方 = 无人机机头方向
+图像左侧 = 无人机左侧
+图像中心 = 无人机中心正下方
+```
+
+因此：
+
+```text
+forward_m > 0：目标在无人机前方
+left_m > 0：目标在无人机左侧
+```
+
+类别名称保留训练时的拼写：
+
+```text
+targer
+```
+
+当前 AprilTag 不在平台中心，第一版暂时使用：
+
+```yaml
+apply_tag_offset: false
+```
+
+也就是把 Tag 中心近似当作平台中心。后续确定 Tag 与平台中心的距离和方向后，再加入旋转偏置。
+
+---
+
+## 3. 文件布局（后期把launch文件整合到对应任务的launch文件）
+
+```text
+d26_air_ground_uav/
+├── scripts/
+│   └── platform_vision_node.py
+├── launch/
+│   └── platform_vision.launch
+├── config/
+│   └── platform_vision.yaml
+└── docs/
+    ├── FSM_LAUNCH_INTEGRATION.md
+    └── PLATFORM_VISION_NODE.md
+```
+
+模型：
+
+```text
+/home/nvidia/models/targer/best_fp16.engine
+```
+
+---
+
+## 4. 依赖
+
+ROS：
+
+```text
+rospy
+std_msgs
+geometry_msgs
+sensor_msgs
+nav_msgs
+tf
+```
+
+Python / Jetson：
+
+```text
+opencv-python 或系统 python3-opencv
+numpy
+TensorRT Python
+PyCUDA
+pupil_apriltags
+```
+
+检查：
+
+```bash
+python3 - <<'PY'
+import cv2
+import numpy
+import tensorrt
+import pycuda
+from pupil_apriltags import Detector
+
+print("OpenCV:", cv2.__version__)
+print("TensorRT:", tensorrt.__version__)
+print("dependencies OK")
+PY
+```
+
+---
+
+## 5. 订阅话题
+
+| 话题 | 类型 | 说明 |
+|---|---|---|
+| `/uav/platform_scan_enable` | `std_msgs/Bool` | 视觉总开关 |
+| `/uav/platform_vision_mode` | `std_msgs/String` | `OFF/SEARCH/TRACK/PRECISION` |
+| `/uav/fsm_state` | `std_msgs/String` | 模式自动推导的备用输入 |
+| `/mavros/local_position/pose` | `geometry_msgs/PoseStamped` | 默认 UAV local pose |
+| `/mavros/distance_sensor/rangefinder_pub` | `sensor_msgs/Range` | 预留测距 |
+
+若 Faster-LIO 直接输出 `nav_msgs/Odometry`：
+
+```yaml
+pose_topic: /Odometry
+pose_msg_type: odometry
+```
+
+若仍通过 MAVROS 使用：
+
+```yaml
+pose_topic: /mavros/local_position/pose
+pose_msg_type: pose_stamped
+```
+
+---
+
+## 6. 发布话题
+
+| 话题 | 类型 | 说明 |
+|---|---|---|
+| `/uav/platform_vision` | `std_msgs/String` | 正式融合结果，FSM 使用 |
+| `/uav/platform_vision/yolo` | `std_msgs/String` | YOLO 原始结果 |
+| `/uav/platform_vision/apriltag` | `std_msgs/String` | Tag 原始结果 |
+| `/uav/platform_vision/status` | `std_msgs/String` | 相机、模型、FPS、模式状态 |
+
+原始结果发布可通过：
+
+```yaml
+publish_raw_results: false
+```
+
+关闭。
+
+---
+
+## 7. 运行模式
+
+### `OFF`
+
+```text
+不进行 YOLO/Tag 推理
+低频读取相机，保持曝光和设备打开
+```
+
+### `SEARCH`
+
+```text
+YOLO：每帧
+Tag：每 3 帧
+```
+
+用于远距离搜索和截获。
+
+### `TRACK`
+
+```text
+Tag：每帧
+YOLO：每 6 帧
+```
+
+用于伴飞。Tag 有效时优先精修，YOLO 负责重捕获。
+
+### `PRECISION`
+
+```text
+Tag：每帧
+YOLO：每 10 帧
+```
+
+用于下降、投放对准和动态降落。
+
+这些频率均可在 YAML 中修改。
+
+---
+
+## 8. 来源切换逻辑
+
+### YOLO → AprilTag
+
+满足：
+
+```text
+Tag ID 正确
+hamming <= 0
+decision_margin >= 20
+连续合格 >= 3 帧
+残差未超过门限
+```
+
+切换为：
+
+```text
+source = APRILTAG
+```
+
+### Tag 短时丢失
+
+```text
+丢失 <= 0.15 s：
+  source = PREDICTED
+  使用内部匀速模型短时保持
+
+之后如果 YOLO 有效：
+  source = YOLO
+
+Tag 丢失超过 0.40 s 且 YOLO 无效：
+  source = NONE
+```
+
+`PREDICTED` 仅用于平滑短时丢帧，不允许 FSM 触发新的下降、投放或触地确认。
+
+### 为什么不直接平均 YOLO 和 Tag
+
+当前 Tag 不在平台中心：
+
+```text
+YOLO 中心 ≈ 平台中心
+Tag 中心 = Tag 安装位置
+```
+
+二者存在真实固定偏差。未完成偏置标定前直接加权平均会让控制目标在两个位置之间跳动，因此第一版采用带滞回的来源切换。
+
+---
+
+## 9. 米制位置估算
+
+### YOLO
+
+已知官方靶标约 `0.50 m × 0.50 m`，根据检测框表观尺寸估算：
+
+```text
+meters_per_pixel ≈ 0.50 / sqrt(box_width_px × box_height_px)
+```
+
+只用于粗搜索和重捕获。
+
+### AprilTag
+
+已知 Tag 有效边长 `0.10 m`：
+
+```text
+meters_per_pixel ≈ 0.10 / 平均角点边长像素
+```
+
+用于近距离精修。
+
+这是平面近似。后续获得准确相机内参后，可升级为角点 `solvePnP` 位姿估计。
+
+---
+
+## 10. 时间同步
+
+节点在每次 `cap.read()` 后记录：
+
+```text
+capture_stamp
+```
+
+同时保存最近约 2 秒的 UAV 位姿。视觉测量完成后，选择最接近 `capture_stamp` 的 pose：
+
+```text
+图像采集时 UAV local pose
++
+机体系相对目标
+=
+target_x_local / target_y_local
+```
+
+默认允许的最大位姿时间差：
+
+```yaml
+pose_sync_max_delta_s: 0.12
+```
+
+若同步失败：
+
+```text
+local_position_valid = false
+```
+
+但仍发布 `forward_m/left_m`，FSM 可以兼容旧逻辑。
+
+---
+
+## 11. 配置参数重点
+
+### YOLO
+
+```yaml
+engine_path: /home/nvidia/models/targer/best_fp16.engine
+yolo_confidence: 0.25
+yolo_iou: 0.45
+platform_size_m: 0.50
+```
+
+### Tag25h9
+
+```yaml
+tag_family: tag25h9
+tag_id: 0
+tag_size_m: 0.10
+tag_min_margin: 20.0
+tag_max_hamming: 0
+tag_confirm_frames: 3
+tag_quad_decimate: 1.0
+```
+
+### 偏置
+
+```yaml
+apply_tag_offset: false
+tag_to_platform_forward_m: 0.0
+tag_to_platform_left_m: 0.0
+```
+
+未完成 Tag 朝向与小车方向标定前保持关闭。
+
+---
+
+## 12. 安装与启动
+
+放置文件：
+
+```bash
+cp platform_vision_node.py \
+  ~/catkin_ws/src/d26_air_ground_uav/scripts/
+
+cp platform_vision.launch \
+  ~/catkin_ws/src/d26_air_ground_uav/launch/
+
+cp platform_vision.yaml \
+  ~/catkin_ws/src/d26_air_ground_uav/config/
+```
+
+授权：
+
+```bash
+chmod +x \
+  ~/catkin_ws/src/d26_air_ground_uav/scripts/platform_vision_node.py
+```
+
+编译：
+
+```bash
+cd ~/catkin_ws
+catkin_make
+source devel/setup.bash
+```
+
+启动：
+
+```bash
+roslaunch d26_air_ground_uav platform_vision.launch
+```
+
+带调试窗口：
+
+```bash
+roslaunch d26_air_ground_uav platform_vision.launch show_debug:=true
+```
+
+---
+
+## 13. 手动台架测试
+
+终端 1：
+
+```bash
+roslaunch d26_air_ground_uav platform_vision.launch show_debug:=true
+```
+
+终端 2：
+
+```bash
+rostopic pub -1 \
+  /uav/platform_scan_enable \
+  std_msgs/Bool \
+  "data: true"
+```
+
+搜索模式：
+
+```bash
+rostopic pub -1 \
+  /uav/platform_vision_mode \
+  std_msgs/String \
+  "data: 'SEARCH'"
+```
+
+精修模式：
+
+```bash
+rostopic pub -1 \
+  /uav/platform_vision_mode \
+  std_msgs/String \
+  "data: 'PRECISION'"
+```
+
+观察：
+
+```bash
+rostopic echo /uav/platform_vision
+rostopic echo /uav/platform_vision/status
+```
+
+关闭：
+
+```bash
+rostopic pub -1 \
+  /uav/platform_scan_enable \
+  std_msgs/Bool \
+  "data: false"
+```
+
+---
+
+## 14. 常见问题
+
+### 无法打开 `/dev/video0`
+
+检查是否仍有测试脚本占用：
+
+```bash
+fuser -v /dev/video0
+```
+
+终止对应进程后重启节点。
+
+### Engine 加载失败
+
+确认 Engine 是在当前 Jetson、当前 TensorRT 环境生成：
+
+```bash
+ls -lh /home/nvidia/models/targer/best_fp16.engine
+/usr/src/tensorrt/bin/trtexec \
+  --loadEngine=/home/nvidia/models/targer/best_fp16.engine \
+  --duration=3
+```
+
+### `local_position_valid=false`
+
+检查：
+
+```bash
+rostopic hz /mavros/local_position/pose
+rostopic echo -n 1 /mavros/local_position/pose
+```
+
+若使用 Faster-LIO Odometry，修改 `pose_topic` 和 `pose_msg_type`。
+
+### Tag 检出但不能成为主来源
+
+检查：
+
+```text
+tag_id
+tag_decision_margin
+tag_hamming
+tag_good_count
+fusion_residual_m
+```
+
+可先适当放宽：
+
+```yaml
+tag_min_margin: 15.0
+apriltag_residual_gate_m: 0.50
+```
+
+不要优先放宽 `tag_max_hamming`，建议继续保持 0。
+
+---
+
+## 15. 后续升级
+
+1. 测量 Tag 到平台中心的偏置。
+2. 确认 Tag 图案方向与小车前进方向之间的固定角度。
+3. 将偏置按 Tag/小车航向旋转后补偿。
+4. 获取下视相机内参，使用 AprilTag 角点做 `solvePnP`。
+5. 将 `std_msgs/String(JSON)` 升级为自定义 ROS 消息。
+6. 记录飞行 rosbag，根据实际残差重新调 YOLO/Tag 门限。

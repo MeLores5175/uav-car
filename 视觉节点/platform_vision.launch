@@ -1,0 +1,31 @@
+<launch>
+  <!--
+    d26_air_ground_uav 融合视觉节点启动文件
+    放置位置：
+      ~/catkin_ws/src/d26_air_ground_uav/launch/platform_vision.launch
+  -->
+
+  <arg name="config"
+       default="$(find d26_air_ground_uav)/config/platform_vision.yaml"/>
+
+  <arg name="engine"
+       default="/home/nvidia/models/targer/best_fp16.engine"/>
+
+  <arg name="show_debug" default="false"/>
+  <arg name="respawn" default="true"/>
+
+  <node pkg="d26_air_ground_uav"
+        type="platform_vision_node.py"
+        name="platform_vision_node"
+        output="screen"
+        respawn="$(arg respawn)"
+        respawn_delay="2.0">
+
+    <!-- 加载到节点私有参数空间 /platform_vision_node/... -->
+    <rosparam command="load" file="$(arg config)"/>
+
+    <!-- 启动时可覆盖 YAML 中的模型路径和 GUI 参数 -->
+    <param name="engine_path" value="$(arg engine)"/>
+    <param name="show_debug" value="$(arg show_debug)"/>
+  </node>
+</launch>
