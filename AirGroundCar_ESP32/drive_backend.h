@@ -14,6 +14,8 @@ public:
 
     DriveBackendType type() const;
     const WheelState& wheelState() const;
+    bool isReady() const;
+    const StepperDriverStatus& stepperStatus() const;
     bool hasAlarm() const;
 
 private:

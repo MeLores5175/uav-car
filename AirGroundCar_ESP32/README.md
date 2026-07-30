@@ -8,7 +8,7 @@
 4. 通过板中心逆运动学求解后轮轴中心的 `v、ω`；
 5. 再由 `speed_planner` 换算左右轮目标速度；
 6. 弧线运行时输出 `ARC_SAMPLE`，用于后续将弧形路径左右轮参数固化到 ESP32；
-7. 当前仍以仿真验证为主，没有伪造弧线查表数据，也没有提前实现真实 PUL/DIR。
+7. 已加入真实步进驱动后端（PUL/DIR/ENA + LEDC 脉冲），但每圈等效脉冲数仍保持未标定保护值。
 
 ## 已写入的机械参数
 
@@ -67,16 +67,26 @@ rear_y = 172.5 cm
 ## 当前默认模式
 
 ```cpp
-constexpr bool USE_SIMULATION = true;
+constexpr bool USE_SIMULATION = false;
 constexpr bool ARC_MODEL_GENERATION_MODE = true;
 constexpr float SIM_WHEEL_TIME_CONSTANT_S = 0.0f;
+constexpr float STEPPER_PULSES_PER_REV = 0.0f;
 ```
 
 含义：
 
-- 使用仿真后端；
+- 选择真实步进后端；
 - 在线求解板中心轨迹并输出弧线样本；
-- 暂时不模拟车轮惯性，先验证运动学公式。
+- `STEPPER_PULSES_PER_REV = 0.0f` 表示尚未标定，驱动初始化会明确报错且不会输出步进脉冲；
+- 仿真响应时间参数仍保留，切换到仿真后端时可继续使用。
+
+上电后串口会检查 `DriveBackend::begin()` 返回值，并输出：
+
+```text
+[DRIVE][STATUS] begun=... config_valid=... pulse_generator_ready=...
+```
+
+如果只是每圈脉冲数未标定，会额外提示设置 `STEPPER_PULSES_PER_REV > 0`。
 
 公式验证通过后，可将：
 
@@ -168,6 +178,10 @@ ARC_SAMPLE,4,0.12345,左轮速度,右轮速度
 - `route_progress_cm`：板中心参考路径累计进度；
 - `segment_progress`：当前路段归一化进度；
 - `left_distance_cm、right_distance_cm`：左右轮累计行程。
+- `driver_ready`：当前后端是否具备实际输出条件；
+- `stepper_config_valid`：步进机械换算参数是否有效；
+- `stepper_pulse_generator_ready`：左右 LEDC 脉冲通道是否均挂接成功；
+- `driver_alarm`：预留的驱动器 ALM 状态；当前 ALM 未接线，因此固定为 `false`。
 
 ## 轨迹检查公式
 
@@ -202,7 +216,7 @@ D-A：
 ## 当前仍未完成
 
 - 根据仿真输出生成 `arc_profile.h/.cpp` 并切换到弧线查表调用；
-- 真实闭环步进驱动器的 PUL/DIR/ENA/ALM；
+- 驱动器 ALM 输入接线与故障上报；
 - 驱动器细分、传动比和每圈等效脉冲数；
 - 有效轮径、有效轮距、左右轮补偿标定；
 - 实体启动按键完整消抖；
@@ -216,4 +230,4 @@ D-A：
 3. 检查 `board_error_cm` 和路线方向；
 4. 改为 `SIM_WHEEL_TIME_CONSTANT_S = 0.15f` 再测动态响应；
 5. 根据稳定结果生成弧线查表参数；
-6. 最后接真实步进驱动器并做轮径、轮距和左右轮补偿标定。
+6. 标定驱动器细分、传动比和 `STEPPER_PULSES_PER_REV`，再做轮径、轮距和左右轮补偿标定。
