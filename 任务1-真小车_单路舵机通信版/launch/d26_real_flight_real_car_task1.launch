@@ -1,0 +1,105 @@
+<launch>
+  <!--
+    任务一正式通信入口：真实无人机 + 真实 ESP32 小车 + 真实单路舵机。
+
+    通信时序：
+      1. GS -> UAV  CMD:<id>:BOOT:T1
+      2. GS -> CAR  CMD:<id>:MODE:T1
+      3. GS -> CAR  CMD:<id>:START:Rxxx
+      4. CAR 先运行，再向 UAV:8888 可靠发送 CMD:<id>:START:Rxxx:T1
+      5. CAR 以 20 Hz 同时向 UAV 和 GS 发送 TEL:CAR
+
+    本 launch 只切换真车通信，不包含平台视觉节点。
+    FSM 的投放下降仍要求外部节点发布 /uav/platform_vision。
+  -->
+
+  <arg name="start_mavros" default="true" />
+  <arg name="start_livox" default="true" />
+  <arg name="start_faster_lio" default="true" />
+
+  <arg name="fcu_url" default="/dev/ttyTHS0:921600" />
+  <arg name="gcs_url" default="" />
+  <arg name="tgt_system" default="1" />
+  <arg name="tgt_component" default="1" />
+
+  <arg name="mission_yaml"
+       default="$(find d26_air_ground_uav)/config/air_ground_mission.yaml" />
+
+  <arg name="start_udp_gateway" default="true" />
+  <arg name="uav_listen_ip" default="0.0.0.0" />
+  <arg name="uav_listen_port" default="8888" />
+  <arg name="ground_station_ip" default="0.0.0.0" />
+  <arg name="ground_station_port" default="8889" />
+  <arg name="car_ip" default="192.168.77.102" />
+
+  <!-- 地面站可由 DHCP 获取地址；真车 IP 必须与 car_ip 一致。 -->
+  <arg name="strict_source_ip" default="false" />
+  <arg name="learn_ground_station_ip" default="true" />
+  <arg name="allow_legacy_format" default="false" />
+
+  <include if="$(arg start_mavros)"
+           file="$(find mavros)/launch/px4.launch">
+    <arg name="fcu_url" value="$(arg fcu_url)" />
+    <arg name="gcs_url" value="$(arg gcs_url)" />
+    <arg name="tgt_system" value="$(arg tgt_system)" />
+    <arg name="tgt_component" value="$(arg tgt_component)" />
+  </include>
+
+  <include if="$(arg start_livox)"
+           file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360.launch" />
+
+  <include if="$(arg start_faster_lio)"
+           file="$(find faster_lio)/launch/rflysim.launch" />
+
+  <node pkg="d26_air_ground_uav"
+        type="air_ground_mission_fsm.py"
+        name="air_ground_mission_fsm"
+        output="screen"
+        required="true">
+    <param name="mission_yaml" value="$(arg mission_yaml)" />
+  </node>
+
+  <node if="$(arg start_udp_gateway)"
+        pkg="d26_air_ground_uav"
+        type="uav_udp_gateway.py"
+        name="uav_udp_gateway"
+        output="screen"
+        respawn="true"
+        respawn_delay="1.0"
+        clear_params="true">
+    <param name="mission_yaml" value="$(arg mission_yaml)" />
+    <param name="listen_ip" value="$(arg uav_listen_ip)" />
+    <param name="listen_port" value="$(arg uav_listen_port)" />
+    <param name="ground_station_ip" value="$(arg ground_station_ip)" />
+    <param name="ground_station_port" value="$(arg ground_station_port)" />
+    <param name="car_ip" value="$(arg car_ip)" />
+    <param name="strict_source_ip" value="$(arg strict_source_ip)" />
+    <param name="learn_ground_station_ip" value="$(arg learn_ground_station_ip)" />
+    <param name="allow_gs_direct_start" value="false" />
+    <param name="allow_legacy_format" value="$(arg allow_legacy_format)" />
+    <param name="forced_task" value="T1" />
+
+    <!-- 真车直接向 UAV:8888 发送 TEL:CAR，由网关发布 /car/state。 -->
+    <param name="car_telemetry_enabled" value="true" />
+    <param name="forward_ros_car_state_to_gs" value="false" />
+    <param name="fake_car_start_sequence_enabled" value="false" />
+
+    <param name="command_result_timeout_s" value="0.80" />
+    <param name="status_max_age_s" value="0.80" />
+    <param name="start_pose_max_age_s" value="0.30" />
+    <param name="max_packet_bytes" value="4096" />
+  </node>
+
+  <!-- 真实单路舵机投放：唯一占用 ESP32 串口，A30 锁止、A90 释放。 -->
+  <node pkg="d26_air_ground_uav"
+        type="drop_actuator_serial.py"
+        name="drop_actuator_serial"
+        output="screen"
+        required="false"
+        respawn="true"
+        respawn_delay="1.0"
+        clear_params="true">
+    <param name="mission_yaml" value="$(arg mission_yaml)" />
+    <param name="simulate" value="false" />
+  </node>
+</launch>
