@@ -66,8 +66,31 @@ mission:
     car_state_is_relative_home: true
 
   drop:
-    # 仅在 C-D 直线段内投放。
+    # 任务一只在 C-D 直线段内下降和投放。
     segment_name: CD
+
+    # 进入 C-D 后先边跟车边下降。下降可在正式投放窗口之前开始，
+    # 这样到 window_start 时已经接近目标高度，不必占用瞄准时间。
+    descent_window_start: 0.05
+
+    # 0.35m 的定义：无人机控制点到小车平台表面的垂直间距。
+    # 平台表面高度 = home_z + platform_height_m；因此默认最终 local Z
+    # 为 home_z + 0.34 + 0.35 = home_z + 0.69m，而不是距地面仅0.35m。
+    platform_height_m: 0.34          # H点地面到小车平台表面，必须现场实测
+    target_height_above_platform_m: 0.35
+
+    # 下降过程模仿动态降落：XY持续跟车，Z目标按速度逐步降低；
+    # 位置/相对速度误差过大或视觉暂时无效时，只暂停下降，不停止XY跟随。
+    descent_rate_mps: 0.20
+    descent_final_rate_mps: 0.10
+    descent_slow_height_m: 0.25      # 距最终目标高度小于该值时切换慢速下降
+    descent_horizontal_speed_scale: 0.75
+    descent_pause_position_error_m: 0.14
+    descent_pause_relative_speed_mps: 0.12
+    descent_vision_abort_timeout_s: 0.60
+    descent_z_tolerance_m: 0.05
+    descent_vertical_speed_mps: 0.12
+    descent_reached_stable_time_s: 0.30
 
     # 投放出口相对无人机控制中心的物理偏置。
     # release_offset_frame=body 时：+X=机头前方，+Y=机体左方；代码会自动取反补偿。
@@ -82,7 +105,7 @@ mission:
     align_relative_speed_mps: 0.075
     align_stable_time_s: 0.45
     align_timeout_s: 1.00            # 精确瞄准超过 1.0 秒且仍在窗口内时直接投放
-    fall_time_s: 0.58               # 含自由落体、舵机与通信延迟后的初值
+    fall_time_s: 0.58               # 改为低空投放后必须重新实测标定
     predicted_error_limit_m: 0.085
     vision_required: true
     command: R1

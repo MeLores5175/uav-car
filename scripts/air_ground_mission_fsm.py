@@ -5,7 +5,7 @@
 2026 D题陆空协同无人机任务状态机。
 
 支持两种任务：
-1. drop：起飞、悬停3秒、截获小车、伴飞、仅在C-D直线段投放、返回H点降落；
+1. drop：起飞、悬停3秒、截获小车、伴飞、C-D段边跟车边下降、低空投放、返回H点降落；
 2. dynamic_land：起飞、截获小车、伴飞、仅在C-D直线段连续下降并着陆、
    平台停留5秒、随车重新起飞、返回H点降落。
 
@@ -137,13 +137,13 @@ class AlphaBetaTracker:
 
 class AirGroundMissionFSM:
     ACTIVE_OFFBOARD_STATES = {
-        "TAKEOFF", "DROP_HOVER", "INTERCEPT", "FOLLOW_DROP", "DROP_ALIGN",
+        "TAKEOFF", "DROP_HOVER", "INTERCEPT", "FOLLOW_DROP", "DROP_DESCENT", "DROP_ALIGN",
         "DROP_WAIT_ACK", "POST_DROP_FOLLOW", "FOLLOW_CD", "DYNAMIC_DESCENT",
         "PLATFORM_DISARM", "PLATFORM_TAKEOFF", "RETURN_HOME"
     }
 
     VISION_STATES = {
-        "INTERCEPT", "FOLLOW_DROP", "DROP_ALIGN", "DROP_WAIT_ACK",
+        "INTERCEPT", "FOLLOW_DROP", "DROP_DESCENT", "DROP_ALIGN", "DROP_WAIT_ACK",
         "POST_DROP_FOLLOW", "FOLLOW_CD", "DYNAMIC_DESCENT",
         "PLATFORM_DISARM", "PLATFORM_DWELL", "PLATFORM_TAKEOFF"
     }
@@ -252,6 +252,7 @@ class AirGroundMissionFSM:
         self.state_enter_time = rospy.Time.now()
         self.follow_stable_since = None
         self.drop_stable_since = None
+        self.drop_descent_stable_since = None
         self.touchdown_since = None
         self.home_stable_since = None
         self.takeoff_stable_since = None
@@ -273,6 +274,7 @@ class AirGroundMissionFSM:
         self.cmd_vz = 0.0
 
         self.landing_target_z = None
+        self.drop_target_z = None
         self.landing_attempts = 0
         self.dwell_start = None
         self.platform_takeoff_prestream_start = None
@@ -626,6 +628,7 @@ class AirGroundMissionFSM:
         self.cmd_vz = 0.0
         self.follow_stable_since = None
         self.drop_stable_since = None
+        self.drop_descent_stable_since = None
         self.touchdown_since = None
         self.home_stable_since = None
         self.takeoff_stable_since = None
@@ -633,6 +636,7 @@ class AirGroundMissionFSM:
         self.last_follow_metrics = None
         self.last_follow_metrics_time = None
         self.landing_target_z = None
+        self.drop_target_z = None
         self.landing_attempts = 0
         self.dwell_start = None
         self.platform_takeoff_prestream_start = None
@@ -659,6 +663,9 @@ class AirGroundMissionFSM:
         self.follow_stable_since = None
         if new_state != "DROP_ALIGN":
             self.drop_stable_since = None
+        if new_state != "DROP_DESCENT":
+            self.drop_descent_stable_since = None
+            self.drop_target_z = None
         if new_state != "DYNAMIC_DESCENT":
             self.touchdown_since = None
         if new_state in {"FOLLOW_DROP", "FOLLOW_CD"}:
@@ -902,6 +909,31 @@ class AirGroundMissionFSM:
             release_local_y = math.sin(yaw) * release_x + math.cos(yaw) * release_y
 
         return -release_local_x, -release_local_y
+
+    def drop_platform_z(self):
+        """返回投放平台表面在 MAVROS local Z 中的高度。"""
+        platform_height = safe_float(
+            self.drop_cfg.get(
+                "platform_height_m",
+                self.land_cfg.get("platform_height_m", 0.34),
+            ),
+            0.34,
+        )
+        return self.home_z + platform_height
+
+    def drop_final_target_z(self):
+        """
+        返回任务一投放前的最终目标高度。
+
+        target_height_above_platform_m 表示无人机控制点相对小车平台表面的
+        垂直间距，而不是相对 H 点地面的绝对高度。这样平台本身有高度时，
+        不会把 0.35m 错当成距地面 0.35m 而贴到平台表面。
+        """
+        clearance = safe_float(
+            self.drop_cfg.get("target_height_above_platform_m", 0.35),
+            0.35,
+        )
+        return self.drop_platform_z() + max(0.0, clearance)
 
     def car_target_xy(self, car):
         # 跟随偏置始终按任务固定航向解释，小车 yaw 不参与目标位置计算。
@@ -1195,15 +1227,145 @@ class AirGroundMissionFSM:
             return
         metrics = self.publish_follow_control(car, self.home_z + self.cruise_height, dt)
         segment = self.drop_cfg.get("segment_name", "CD")
-        start = safe_float(self.drop_cfg.get("window_start", 0.20), 0.20)
+        descent_start = safe_float(
+            self.drop_cfg.get("descent_window_start", 0.05), 0.05
+        )
         end = safe_float(self.drop_cfg.get("window_end", 0.78), 0.78)
-        if self.in_segment_window(car, segment, start, end) and self.follow_is_stable(metrics, strict=True):
-            self.enter_state("DROP_ALIGN")
+        if (
+            self.in_segment_window(car, segment, descent_start, end) and
+            self.follow_is_stable(metrics, strict=True)
+        ):
+            self.drop_target_z = max(
+                self.drop_final_target_z(),
+                min(
+                    self.current_pose.pose.position.z,
+                    self.home_z + self.cruise_height,
+                ),
+            )
+            self.enter_state("DROP_DESCENT")
         elif (
             str(car.get("segment", "")).upper() == str(segment).upper() and
             safe_float(car.get("segment_progress", -1.0)) > end
         ):
             self.enter_return_home("DROP_WINDOW_MISSED")
+
+    def handle_drop_descent(self, dt):
+        """任务一：保持 XY 跟车，同时逐步降低 Z 目标到投放高度。"""
+        car = self.update_car_estimator(
+            safe_float(self.follow_cfg.get("follow_prediction_s", 0.18), 0.18)
+        )
+        if car is None:
+            return
+
+        segment = str(self.drop_cfg.get("segment_name", "CD")).upper()
+        window_start = safe_float(self.drop_cfg.get("window_start", 0.20), 0.20)
+        window_end = safe_float(self.drop_cfg.get("window_end", 0.78), 0.78)
+        car_segment = str(car.get("segment", "")).upper()
+        progress = safe_float(car.get("segment_progress", -1.0))
+
+        if car_segment != segment:
+            self.enter_return_home("DROP_DESCENT_SEGMENT_LOST")
+            return
+
+        # 保留之前确定的投放兜底：若下降阶段已经耗尽 C-D 投放窗口，
+        # 仍在 C-D 内时按当前位置直接投放，避免整轮任务完全错过。
+        if progress > window_end:
+            rospy.logwarn(
+                "Drop descent reached window deadline at progress=%.3f; "
+                "force drop at current height z=%.3f.",
+                progress,
+                self.current_pose.pose.position.z,
+            )
+            self.start_drop_action("DESCENT_WINDOW_DEADLINE_FORCE_DROP")
+            return
+
+        final_z = self.drop_final_target_z()
+        if self.drop_target_z is None:
+            self.drop_target_z = max(
+                final_z,
+                min(
+                    self.current_pose.pose.position.z,
+                    self.home_z + self.cruise_height,
+                ),
+            )
+
+        drop_offset = self.drop_uav_center_offset()
+        metrics_preview = self.follow_metrics(car, target_offset_xy=drop_offset)
+        vision_ok = self.vision_valid()
+        vision_age = self.vision_age()
+
+        if not vision_ok and vision_age >= safe_float(
+            self.drop_cfg.get("descent_vision_abort_timeout_s", 0.60), 0.60
+        ):
+            rospy.logerr(
+                "Drop descent vision lost %.2fs; return to high-altitude follow.",
+                vision_age,
+            )
+            self.enter_state("FOLLOW_DROP")
+            return
+
+        can_descend = (
+            vision_ok and
+            metrics_preview is not None and
+            metrics_preview["position_error"] <= safe_float(
+                self.drop_cfg.get("descent_pause_position_error_m", 0.14), 0.14
+            ) and
+            metrics_preview["relative_speed"] <= safe_float(
+                self.drop_cfg.get("descent_pause_relative_speed_mps", 0.12), 0.12
+            )
+        )
+
+        if can_descend:
+            remaining = max(0.0, self.drop_target_z - final_z)
+            slow_band = safe_float(
+                self.drop_cfg.get("descent_slow_height_m", 0.25), 0.25
+            )
+            rate = safe_float(
+                self.drop_cfg.get(
+                    "descent_final_rate_mps" if remaining <= slow_band
+                    else "descent_rate_mps",
+                    0.10 if remaining <= slow_band else 0.20,
+                ),
+                0.10 if remaining <= slow_band else 0.20,
+            )
+            self.drop_target_z = max(final_z, self.drop_target_z - rate * dt)
+
+        metrics = self.publish_follow_control(
+            car,
+            self.drop_target_z,
+            dt,
+            speed_scale=safe_float(
+                self.drop_cfg.get("descent_horizontal_speed_scale", 0.75), 0.75
+            ),
+            target_offset_xy=drop_offset,
+        )
+
+        z_reached = (
+            abs(self.current_pose.pose.position.z - final_z) <= safe_float(
+                self.drop_cfg.get("descent_z_tolerance_m", 0.05), 0.05
+            ) and
+            abs(self.current_vel[2]) <= safe_float(
+                self.drop_cfg.get("descent_vertical_speed_mps", 0.12), 0.12
+            )
+        )
+        tracking_ok = (
+            vision_ok and metrics is not None and
+            metrics["position_error"] <= safe_float(
+                self.drop_cfg.get("descent_pause_position_error_m", 0.14), 0.14
+            ) and
+            metrics["relative_speed"] <= safe_float(
+                self.drop_cfg.get("descent_pause_relative_speed_mps", 0.12), 0.12
+            )
+        )
+        ready = self.update_stable_timer(
+            z_reached and tracking_ok and progress >= window_start,
+            "drop_descent_stable_since",
+            safe_float(
+                self.drop_cfg.get("descent_reached_stable_time_s", 0.30), 0.30
+            ),
+        )
+        if ready:
+            self.enter_state("DROP_ALIGN")
 
     def handle_drop_align(self, dt):
         car = self.update_car_estimator(
@@ -1213,7 +1375,7 @@ class AirGroundMissionFSM:
             return
         drop_offset = self.drop_uav_center_offset()
         metrics = self.publish_follow_control(
-            car, self.home_z + self.cruise_height, dt,
+            car, self.drop_final_target_z(), dt,
             target_offset_xy=drop_offset,
         )
         segment = self.drop_cfg.get("segment_name", "CD")
@@ -1280,8 +1442,8 @@ class AirGroundMissionFSM:
         )
         if car is not None:
             self.publish_follow_control(
-                car, self.home_z + self.cruise_height, dt,
-                target_offset_xy=self.drop_uav_center_offset(car),
+                car, self.drop_final_target_z(), dt,
+                target_offset_xy=self.drop_uav_center_offset(),
             )
         if self.drop_ack_success:
             self.drop_done_time = rospy.Time.now()
@@ -1457,10 +1619,13 @@ class AirGroundMissionFSM:
             self.expected_disarm = True
             self.enter_state("PLATFORM_DISARM")
 
-    def follow_metrics(self, car):
+    def follow_metrics(self, car, target_offset_xy=None):
         if self.current_pose is None or car is None:
             return None
         tx, ty = self.car_target_xy(car)
+        if target_offset_xy is not None:
+            tx += safe_float(target_offset_xy[0], 0.0)
+            ty += safe_float(target_offset_xy[1], 0.0)
         p = self.current_pose.pose.position
         return {
             "position_error": norm2(tx - p.x, ty - p.y),
@@ -1628,7 +1793,7 @@ class AirGroundMissionFSM:
             return
 
         car_dependent = self.fsm_state in {
-            "INTERCEPT", "FOLLOW_DROP", "DROP_ALIGN", "DROP_WAIT_ACK",
+            "INTERCEPT", "FOLLOW_DROP", "DROP_DESCENT", "DROP_ALIGN", "DROP_WAIT_ACK",
             "POST_DROP_FOLLOW", "FOLLOW_CD", "DYNAMIC_DESCENT", "PLATFORM_TAKEOFF"
         }
         if car_dependent and self.car_age() > safe_float(
@@ -1658,6 +1823,7 @@ class AirGroundMissionFSM:
             "DROP_HOVER": "起飞点悬停",
             "INTERCEPT": "预测截获小车",
             "FOLLOW_DROP": "伴飞等待投放",
+            "DROP_DESCENT": "跟车下降到投放高度",
             "DROP_ALIGN": "投放对准",
             "DROP_WAIT_ACK": "投放执行",
             "POST_DROP_FOLLOW": "投放后伴飞",
@@ -1774,6 +1940,12 @@ class AirGroundMissionFSM:
                 "retry_count": self.drop_retry_count,
                 "ack": self.drop_ack_success,
                 "ack_text": self.drop_ack_text,
+                "descent_target_z": self.drop_target_z,
+                "final_target_z": self.drop_final_target_z()
+                    if self.home_ready else None,
+                "target_height_above_platform_m": safe_float(
+                    self.drop_cfg.get("target_height_above_platform_m", 0.35), 0.35
+                ),
                 "release_offset_frame": str(
                     self.drop_cfg.get("release_offset_frame", "body")
                 ),
@@ -1841,6 +2013,9 @@ class AirGroundMissionFSM:
 
             elif self.fsm_state == "FOLLOW_DROP":
                 self.handle_follow_drop(dt)
+
+            elif self.fsm_state == "DROP_DESCENT":
+                self.handle_drop_descent(dt)
 
             elif self.fsm_state == "DROP_ALIGN":
                 self.handle_drop_align(dt)
