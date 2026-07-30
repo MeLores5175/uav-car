@@ -227,7 +227,7 @@ class RealFlightFakeCar:
             ),
         }
         self.telemetry_rate_hz = clamp(
-            safe_float(rospy.get_param("~telemetry_rate_hz", 30.0), 30.0),
+            safe_float(rospy.get_param("~telemetry_rate_hz", 50.0), 50.0),
             1.0,
             100.0,
         )
@@ -236,6 +236,11 @@ class RealFlightFakeCar:
             safe_float(rospy.get_param("~update_rate_hz", 100.0), 100.0),
         )
         self.update_rate_hz = max(requested_update_rate, self.telemetry_rate_hz)
+        self.max_accel = max(
+            0.01,
+            safe_float(rospy.get_param("~max_accel_mps2", 0.15), 0.15),
+        )
+        self.current_speed = 0.0
         self.path_s = clamp(
             safe_float(rospy.get_param("~start_path_s", 0.0), 0.0),
             0.0,
@@ -525,6 +530,7 @@ class RealFlightFakeCar:
                 self.track.total,
             )
             self.vision_stable_count = 0
+            self.current_speed = 0.0
         rospy.logwarn("Fake car reset to path_s=%.3fm and stopped", self.path_s)
 
     def start_mission_cb(self, msg):
@@ -567,24 +573,32 @@ class RealFlightFakeCar:
 
     def advance(self, dt):
         if not self.running:
+            self.current_speed = 0.0
             return
 
         target_speed = self.current_target_speed()
-        if target_speed <= 0.0:
+        max_dv = self.max_accel * max(dt, 0.0)
+        self.current_speed += clamp(
+            target_speed - self.current_speed,
+            -max_dv,
+            max_dv,
+        )
+        if self.current_speed <= 1e-5:
             return
 
-        next_s = self.path_s + target_speed * dt
+        next_s = self.path_s + self.current_speed * dt
         if next_s >= self.track.total:
             if self.loop_track:
                 next_s %= self.track.total
             else:
                 next_s = self.track.total
+                self.current_speed = 0.0
                 self.running = False
                 rospy.logwarn("Fake car reached end of one lap and stopped")
         self.path_s = next_s
 
     def current_car(self):
-        effective_speed = self.current_target_speed() if self.running else 0.0
+        effective_speed = self.current_speed if self.running else 0.0
         return self.track.map(self.path_s, effective_speed)
 
     def publish_car_state(self, car, now):
@@ -599,6 +613,7 @@ class RealFlightFakeCar:
             "vx": car["vx"],
             "vy": car["vy"],
             "target_speed_mps": self.current_target_speed() if self.running else 0.0,
+            "actual_speed_mps": self.current_speed if self.running else 0.0,
             "yaw": car["yaw"],
             "field_x_cm": car["field_x_cm"],
             "field_y_cm": car["field_y_cm"],
@@ -667,6 +682,8 @@ class RealFlightFakeCar:
             "stamp": now.to_sec(),
             "running": self.running,
             "current_target_speed_mps": self.current_target_speed(),
+            "current_actual_speed_mps": self.current_speed,
+            "max_accel_mps2": self.max_accel,
             "segment_speeds_mps": dict(self.segment_speeds),
             "telemetry_rate_hz": self.telemetry_rate_hz,
             "path_s_m": self.path_s,

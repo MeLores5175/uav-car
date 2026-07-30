@@ -37,12 +37,13 @@
   <arg name="allow_legacy_format" default="false" />
 
   <!-- 虚拟小车参数 -->
-  <arg name="car_speed_ab" default="0.05" />
-  <arg name="car_speed_bc" default="0.04" />
-  <arg name="car_speed_cd" default="0.05" />
-  <arg name="car_speed_da" default="0.04" />
-  <arg name="car_telemetry_rate_hz" default="30.0" />
+  <arg name="car_speed_ab" default="0.15" />
+  <arg name="car_speed_bc" default="0.15" />
+  <arg name="car_speed_cd" default="0.15" />
+  <arg name="car_speed_da" default="0.15" />
+  <arg name="car_telemetry_rate_hz" default="50.0" />
   <arg name="car_update_rate_hz" default="100.0" />
+  <arg name="car_max_accel_mps2" default="0.15" />
   <arg name="start_path_s" default="0.0" />
   <arg name="max_fake_vision_range_m" default="6.0" />
   <!-- 正式题目时序：假小车先动，再延时通知无人机 START。 -->
@@ -129,6 +130,7 @@
     <param name="speed_da" value="$(arg car_speed_da)" />
     <param name="telemetry_rate_hz" value="$(arg car_telemetry_rate_hz)" />
     <param name="update_rate_hz" value="$(arg car_update_rate_hz)" />
+    <param name="max_accel_mps2" value="$(arg car_max_accel_mps2)" />
     <param name="start_path_s" value="$(arg start_path_s)" />
     <param name="loop_track" value="false" />
 
