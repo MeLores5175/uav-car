@@ -1,0 +1,283 @@
+# 2026 D题陆空协同无人机参数
+# 坐标约定：
+# 1. MAVROS local 坐标使用 ROS ENU 语义；
+# 2. car_udp_bridge 默认输出相对无人机起飞点的 x/y，FSM 会加上 home_x/home_y；
+# 3. 小车赛道几何必须在实地用 Faster-LIO 坐标重新标定 A 点与 A->B 航向。
+
+mission:
+  default_type: drop                 # drop 或 dynamic_land
+  frame: relative_home
+  control_rate_hz: 50.0
+  status_rate_hz: 10.0
+
+  takeoff:
+    cruise_height_m: 1.50            # 相对 H 点地面的巡航高度
+    yaw_deg: 0.0                    # 全任务固定航向；跟随和半圆伴飞均不使用小车 yaw
+    xy_tolerance_m: 0.18
+    z_tolerance_m: 0.10
+    speed_tolerance_mps: 0.20
+    stable_time_s: 0.45            # 仅任务二使用；任务一首次满足阈值就开始3秒计时
+    drop_hover_time_s: 3.00          # 任务一固定悬停时间；期间不因失稳重置计时
+    max_wait_s: 8.0                  # 起飞判稳最长等待；任务一软超时后仍先悬停3秒
+    soft_timeout_z_error_m: 0.22
+
+  fcu:
+    offboard_prestream_s: 1.0
+    mode_request_interval_s: 1.0
+    arm_request_interval_s: 1.0
+    service_wait_s: 8.0
+    auto_set_mode: true
+    auto_arm: true
+
+  follow:
+    # 无人机目标相对小车平台中心的水平偏置。0,0 表示正上方。
+    offset_forward_m: 0.0
+    offset_left_m: 0.0
+    velocity_feedforward_gain: 1.0
+    position_kp: 0.95
+    relative_velocity_kd: 0.35
+    vertical_kp: 0.90
+    max_horizontal_speed_mps: 1.20
+    max_horizontal_accel_mps2: 0.80
+    max_vertical_speed_mps: 0.45
+    max_vertical_accel_mps2: 0.60
+    intercept_prediction_s: 0.60
+    follow_prediction_s: 0.18
+
+    acquire_position_error_m: 0.20
+    acquire_relative_speed_mps: 0.18
+    acquire_stable_time_s: 0.45
+
+    stable_position_error_m: 0.12
+    stable_relative_speed_mps: 0.10
+    stable_time_s: 0.50
+
+  estimator:
+    telemetry_timeout_s: 0.50
+    vision_timeout_s: 0.35
+    telemetry_position_alpha: 0.45
+    telemetry_velocity_alpha: 0.65
+    vision_position_alpha: 0.72
+    position_beta: 0.015
+    max_car_speed_mps: 0.45
+    max_prediction_s: 0.70
+    vision_min_confidence: 0.55
+    vision_min_stable_count: 2
+    car_state_is_relative_home: true
+
+  drop:
+    # 任务一只在 C-D 直线段内下降和投放。
+    segment_name: CD
+
+    # 进入 C-D 后先边跟车边下降。下降可在正式投放窗口之前开始，
+    # 这样到 window_start 时已经接近目标高度，不必占用瞄准时间。
+    descent_window_start: 0.05
+
+    # 0.35m 的定义：无人机控制点到小车平台表面的垂直间距。
+    # 平台表面高度 = home_z + platform_height_m；因此默认最终 local Z
+    # 为 home_z + 0.34 + 0.35 = home_z + 0.69m，而不是距地面仅0.35m。
+    platform_height_m: 0.34          # H点地面到小车平台表面，必须现场实测
+    target_height_above_platform_m: 0.35
+
+    # 下降过程模仿动态降落：XY持续跟车，Z目标按速度逐步降低；
+    # 位置/相对速度误差过大或视觉暂时无效时，只暂停下降，不停止XY跟随。
+    descent_rate_mps: 0.20
+    descent_final_rate_mps: 0.10
+    descent_slow_height_m: 0.25      # 距最终目标高度小于该值时切换慢速下降
+    descent_horizontal_speed_scale: 0.75
+    descent_pause_position_error_m: 0.14
+    descent_pause_relative_speed_mps: 0.12
+    descent_vision_abort_timeout_s: 0.60
+    descent_z_tolerance_m: 0.05
+    descent_vertical_speed_mps: 0.12
+    descent_reached_stable_time_s: 0.30
+
+    # 投放出口相对无人机控制中心的物理偏置。
+    # release_offset_frame=body 时：+X=机头前方，+Y=机体左方；代码会自动取反补偿。
+    # release_offset_frame=local 时：+X/+Y 与 MAVROS local ENU 一致。
+    # 例：投放出口位于机头前方 0.06m，则 x=0.06, y=0.00。
+    release_offset_frame: body       # body 或 local
+    release_offset_x_m: 0.00         # 单位 m，现场测量/投放标定后修改
+    release_offset_y_m: 0.00         # 单位 m，现场测量/投放标定后修改
+    window_start: 0.20
+    window_end: 0.78
+    align_position_error_m: 0.075
+    align_relative_speed_mps: 0.075
+    align_stable_time_s: 0.45
+    align_timeout_s: 1.00            # 精确瞄准超过 1.0 秒且仍在窗口内时直接投放
+    fall_time_s: 0.58               # 改为低空投放后必须重新实测标定
+    predicted_error_limit_m: 0.085
+    vision_required: true
+    command: R1
+    ack_timeout_s: 1.80
+    retry_interval_s: 0.55
+    max_retries: 3
+    post_drop_follow_s: 0.50
+
+  dynamic_landing:
+    # 用户已确定：只允许在 C-D 直线段下降和着陆。
+    segment_name: CD
+    window_start: 0.05
+    latest_start: 0.22
+    abort_progress: 0.96
+    max_attempts_in_cd: 2
+
+    platform_height_m: 0.34          # H点地面到小车平台表面，必须实测
+    entry_position_error_m: 0.12
+    entry_relative_speed_mps: 0.10
+    entry_stable_time_s: 0.45
+
+    descent_rate_mps: 0.20
+    touchdown_rate_mps: 0.09
+    slow_height_above_platform_m: 0.42
+    min_target_height_above_platform_m: 0.03
+    pause_position_error_m: 0.14
+    pause_relative_speed_mps: 0.12
+
+    vision_abort_timeout_s: 0.60
+    reacquire_climb_m: 0.28
+
+    touchdown_z_tolerance_m: 0.08
+    touchdown_vertical_speed_mps: 0.10
+    touchdown_range_max_m: 0.14
+    touchdown_confirm_time_s: 0.45
+    use_extended_landed_state: true
+    use_rangefinder: true
+    range_required_for_touchdown: true
+    range_topic: /mavros/distance_sensor/rangefinder_pub
+
+    dwell_time_s: 5.00
+    takeoff_prestream_s: 1.00
+    takeoff_clearance_m: 0.42
+    takeoff_reached_height_m: 1.20
+    takeoff_max_wait_s: 8.0
+
+  return_home:
+    height_m: 1.50
+    max_horizontal_speed_mps: 1.00
+    max_horizontal_accel_mps2: 0.70
+    position_kp: 0.80
+    position_tolerance_m: 0.16
+    speed_tolerance_mps: 0.18
+    stable_time_s: 0.45
+    auto_land_prepare_s: 0.60
+    auto_land_timeout_s: 15.0
+
+  safety:
+    car_loss_return_s: 1.20
+    odometry_loss_auto_land_s: 0.70
+
+vision:
+  camera_index: 0
+  width: 640
+  height: 480
+  fps: 30
+  show_debug: false
+  publish_rate_hz: 25.0
+  disabled_read_rate_hz: 3.0
+
+  outer_circle_diameter_m: 0.50
+  inner_outer_ratio: 0.60
+  ratio_tolerance: 0.18
+  min_outer_diameter_px: 55
+  max_outer_diameter_px: 620
+  min_contour_area_px: 600
+  min_circularity: 0.52
+  max_pair_center_error_ratio: 0.18
+  max_prediction_residual_px: 42.0
+  max_diameter_change_ratio: 0.28
+  min_publish_confidence: 0.45
+
+  adaptive_block_size: 41
+  adaptive_c: 7
+  morphology_kernel: 3
+
+  release_u: -1.0                  # -1 自动使用图像中心
+  release_v: -1.0
+  image_down_to_body_forward_sign: -1.0
+  image_right_to_body_left_sign: -1.0
+  camera_offset_forward_m: 0.0
+  camera_offset_left_m: 0.0
+  focal_length_px: 520.0
+
+udp_protocol:
+  version: "1.1"
+  strict_source_ip: true
+  allow_gs_direct_start: false
+  allow_legacy_format: true
+
+  uav:
+    listen_ip: 0.0.0.0
+    listen_port: 8888
+
+  ground_station:
+    ip: 192.168.151.101          # 按现场地面站 IP 修改
+    port: 8889
+
+  car:
+    ip: 192.168.151.103          # 按现场 ESP32/树莓派 IP 修改
+    port: 8890
+    require_segment_consistency: true
+    max_delay_compensation_s: 0.30
+
+  reliability:
+    dedup_cache_size: 32
+    command_result_timeout_s: 0.22
+    event_repeat: 3
+    event_repeat_interval_s: 0.05
+
+  telemetry:
+    heartbeat_rate_hz: 1.0
+    uav_rate_hz: 10.0
+
+  # 协议中的 FIELD 坐标：场地左下角为 (0,0)，X 向右，Y 向上，单位 cm。
+  # 下列参数把 MAVROS/Faster-LIO 的相对 H 点坐标转换为 FIELD 坐标。
+  field_transform:
+    h_field_x_cm: 75.0           # H 点中心距场地左边，按现场实测修正
+    h_field_y_cm: 75.0           # H 点中心距场地下边，按现场实测修正
+    local_x_to_field_yaw_deg: 0.0  # MAVROS local +X 在 FIELD 中的航向，必须标定
+
+  # 用小车累计里程 path_s_cm 计算 segment_progress，并校验 segment。
+  track:
+    straight_length_m: 1.50
+    radius_m: 0.75
+    segment_boundary_tolerance_m: 0.08
+
+# 以下两个节点为旧版原始 JSON 协议保留，正式 V1.1 launch 默认不再启动。
+car_udp:
+  bind_ip: 0.0.0.0
+  bind_port: 8890
+  socket_timeout_s: 0.05
+  allow_text_commands: true
+  auto_start_from_car: true
+
+  # 当小车只发送 path_s / speed 时，使用下面的跑道模型换算位置。
+  # a_x/a_y 是 A 点相对 H 点的 Faster-LIO 坐标；ab_yaw 是 A->B 的方向。
+  track:
+    enabled: true
+    a_x_m: 1.25                    # 必须现场标定
+    a_y_m: 0.75                    # 必须现场标定
+    ab_yaw_deg: 90.0               # 必须现场标定
+    straight_length_m: 1.50
+    radius_m: 0.75
+
+  status_reply_enabled: true
+
+actuator:
+  enabled: true
+  simulate: false
+  port: /dev/ttyUSB0
+  baud: 115200
+  timeout_s: 0.35
+  boot_wait_s: 2.0
+  retry_count: 3
+  retry_delay_s: 0.20
+  ack_contains: OK
+  line_ending: "\n"
+  auto_detect: true
+
+status_udp:
+  enabled: false                    # 旧版无前缀 JSON 发送器，正式 V1.1 禁用
+  target_ip: 192.168.151.101
+  target_port: 8889
+  max_rate_hz: 10.0
