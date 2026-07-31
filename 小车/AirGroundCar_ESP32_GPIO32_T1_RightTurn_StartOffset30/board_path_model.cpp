@@ -24,13 +24,17 @@ BoardReference BoardPathModel::reference(RouteSegment segment,
         0.0f
     };
 
-    const float straight = CarConfig::STRAIGHT_LENGTH_CM;
+    const float firstStraight =
+        CarConfig::FIRST_STRAIGHT_LENGTH_CM;
+    const float trackStraight =
+        CarConfig::TRACK_STRAIGHT_LENGTH_CM;
     const float radius = CarConfig::BOARD_PATH_RADIUS_CM;
     const float arcLength = PI * radius;
 
     switch (segment) {
         case RouteSegment::STRAIGHT_AB: {
-            const float s = clamp(segmentProgressCm, 0.0f, straight);
+            const float s =
+                clamp(segmentProgressCm, 0.0f, firstStraight);
             ref.xCm = CarConfig::START_BOARD_X_CM;
             ref.yCm = CarConfig::START_BOARD_Y_CM + s;
             ref.vxCmS = 0.0f;
@@ -44,7 +48,7 @@ BoardReference BoardPathModel::reference(RouteSegment segment,
             const float centerX =
                 CarConfig::START_BOARD_X_CM + radius;
             const float centerY =
-                CarConfig::START_BOARD_Y_CM + straight;
+                CarConfig::TOP_TANGENT_BOARD_Y_CM;
 
             ref.xCm = centerX + radius * cosf(phi);
             ref.yCm = centerY + radius * sinf(phi);
@@ -54,11 +58,12 @@ BoardReference BoardPathModel::reference(RouteSegment segment,
         }
 
         case RouteSegment::STRAIGHT_CD: {
-            const float s = clamp(segmentProgressCm, 0.0f, straight);
+            const float s =
+                clamp(segmentProgressCm, 0.0f, trackStraight);
             ref.xCm =
                 CarConfig::START_BOARD_X_CM + 2.0f * radius;
             ref.yCm =
-                CarConfig::START_BOARD_Y_CM + straight - s;
+                CarConfig::TOP_TANGENT_BOARD_Y_CM - s;
             ref.vxCmS = 0.0f;
             ref.vyCmS = -boardSpeedCmS;
             break;
@@ -69,7 +74,8 @@ BoardReference BoardPathModel::reference(RouteSegment segment,
             const float phi = -s / radius;
             const float centerX =
                 CarConfig::START_BOARD_X_CM + radius;
-            const float centerY = CarConfig::START_BOARD_Y_CM;
+            const float centerY =
+                CarConfig::START_LINE_BOARD_Y_CM;
 
             ref.xCm = centerX + radius * cosf(phi);
             ref.yCm = centerY + radius * sinf(phi);
@@ -79,9 +85,17 @@ BoardReference BoardPathModel::reference(RouteSegment segment,
         }
 
         case RouteSegment::COMPLETE:
+            // 一圈结束于原出发线A：此时车体中心在出发线上，
+            // 而不是回到最初位于线后30 cm的中心起点。
+            ref.xCm = CarConfig::START_BOARD_X_CM;
+            ref.yCm = CarConfig::START_LINE_BOARD_Y_CM;
+            ref.vxCmS = 0.0f;
+            ref.vyCmS = 0.0f;
+            break;
+
         case RouteSegment::WAITING:
         default:
-            // 等待或完成后，参考点固定在 A，参考速度为零。
+            // 等待阶段参考点固定在实际初始中心位置。
             break;
     }
 

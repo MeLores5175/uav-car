@@ -46,9 +46,17 @@ MotionCommand RouteController::update(const Pose2D& rearPose,
 
     const float radius = CarConfig::BOARD_PATH_RADIUS_CM;
     const float arcLength = PI * radius;
-    const float endAB = CarConfig::STRAIGHT_LENGTH_CM;
+
+    // 初始中心在出发线后方30 cm：
+    // 第一次直线为180 cm，对侧直线仍为150 cm。
+    const float firstStraight =
+        CarConfig::FIRST_STRAIGHT_LENGTH_CM;
+    const float trackStraight =
+        CarConfig::TRACK_STRAIGHT_LENGTH_CM;
+
+    const float endAB = firstStraight;
     const float endBC = endAB + arcLength;
-    const float endCD = endBC + CarConfig::STRAIGHT_LENGTH_CM;
+    const float endCD = endBC + trackStraight;
     const float endDA = endCD + arcLength;
 
     // 建模阶段按“板中心参考路径长度”推进，不再使用后轮轴累计里程。
@@ -96,9 +104,10 @@ MotionCommand RouteController::update(const Pose2D& rearPose,
         localSegmentProgressCm(endAB, endBC, endCD);
 
     float segmentLength = 1.0f;
-    if (segment_ == RouteSegment::STRAIGHT_AB ||
-        segment_ == RouteSegment::STRAIGHT_CD) {
-        segmentLength = CarConfig::STRAIGHT_LENGTH_CM;
+    if (segment_ == RouteSegment::STRAIGHT_AB) {
+        segmentLength = firstStraight;
+    } else if (segment_ == RouteSegment::STRAIGHT_CD) {
+        segmentLength = trackStraight;
     } else if (segment_ == RouteSegment::ARC_BC ||
                segment_ == RouteSegment::ARC_DA) {
         segmentLength = arcLength;

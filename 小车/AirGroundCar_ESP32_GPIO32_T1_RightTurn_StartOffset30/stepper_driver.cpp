@@ -10,9 +10,12 @@
 namespace {
 
 constexpr uint8_t kLeftLedcChannel = 0;
-constexpr uint8_t kRightLedcChannel = 1;
+// 通道0和1可能映射/复用同一LEDC timer；右轮改用通道2。
+constexpr uint8_t kRightLedcChannel = 2;
 constexpr uint8_t kLedcResolutionBits = 10;
-constexpr uint32_t kInitialLedcFrequencyHz = 1000;
+// 两路必须以不同频率挂接，避免Arduino-ESP32 3.x将它们自动合并到同一timer。
+constexpr uint32_t kLeftInitialLedcFrequencyHz = 997;
+constexpr uint32_t kRightInitialLedcFrequencyHz = 1009;
 constexpr uint32_t kLedcRunDuty =
     1UL << (kLedcResolutionBits - 1);
 constexpr float kStopSpeedCmS = 0.001f;
@@ -28,20 +31,26 @@ struct MotorPins {
     uint8_t dir;
     uint8_t en;
     uint8_t channel;
+    uint8_t forwardDirLevel;
+    uint32_t initialFrequencyHz;
 };
 
 constexpr MotorPins kLeftPins{
     CarConfig::LEFT_STP,
     CarConfig::LEFT_DIR,
     CarConfig::LEFT_EN,
-    kLeftLedcChannel
+    kLeftLedcChannel,
+    CarConfig::LEFT_FORWARD_DIR_LEVEL,
+    kLeftInitialLedcFrequencyHz
 };
 
 constexpr MotorPins kRightPins{
     CarConfig::RIGHT_STP,
     CarConfig::RIGHT_DIR,
     CarConfig::RIGHT_EN,
-    kRightLedcChannel
+    kRightLedcChannel,
+    CarConfig::RIGHT_FORWARD_DIR_LEVEL,
+    kRightInitialLedcFrequencyHz
 };
 
 bool stepperConfigValid()
@@ -109,11 +118,12 @@ void writeEnable(const MotorPins& pins, bool enable)
 
 void writeDirection(const MotorPins& pins, bool forward)
 {
+    const uint8_t reverseDirLevel =
+        pins.forwardDirLevel == HIGH ? LOW : HIGH;
+
     digitalWrite(
         pins.dir,
-        forward
-            ? CarConfig::STEPPER_FORWARD_DIR_LEVEL
-            : CarConfig::STEPPER_REVERSE_DIR_LEVEL);
+        forward ? pins.forwardDirLevel : reverseDirLevel);
     delayMicroseconds(20);
 }
 
@@ -141,7 +151,7 @@ bool attachPulseOutput(const MotorPins& pins)
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
         return ledcAttachChannel(
             pins.step,
-            kInitialLedcFrequencyHz,
+            pins.initialFrequencyHz,
             kLedcResolutionBits,
             pins.channel);
 #else
@@ -150,7 +160,7 @@ bool attachPulseOutput(const MotorPins& pins)
     }
 
 #if !defined(ESP_ARDUINO_VERSION_MAJOR) || ESP_ARDUINO_VERSION_MAJOR < 3
-    ledcSetup(pins.channel, kInitialLedcFrequencyHz, kLedcResolutionBits);
+    ledcSetup(pins.channel, pins.initialFrequencyHz, kLedcResolutionBits);
     ledcAttachPin(pins.step, pins.channel);
     stopPulseOutput(pins);
     return true;
@@ -259,6 +269,20 @@ bool StepperDriver::begin()
 
     const bool leftAttached = attachPulseOutput(kLeftPins);
     const bool rightAttached = attachPulseOutput(kRightPins);
+
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+    if (leftAttached && rightAttached) {
+        const uint32_t leftAttachHz = ledcReadFreq(kLeftPins.step);
+        const uint32_t rightAttachHz = ledcReadFreq(kRightPins.step);
+        Serial.printf(
+            "[LEDC] independent attach check: left=%lu Hz right=%lu Hz "
+            "(channels %u/%u)\n",
+            static_cast<unsigned long>(leftAttachHz),
+            static_cast<unsigned long>(rightAttachHz),
+            static_cast<unsigned>(kLeftPins.channel),
+            static_cast<unsigned>(kRightPins.channel));
+    }
+#endif
 
     status_.left.pulseGeneratorAttached = leftAttached;
     status_.right.pulseGeneratorAttached = rightAttached;
