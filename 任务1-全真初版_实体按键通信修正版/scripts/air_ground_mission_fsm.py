@@ -41,6 +41,38 @@ def norm3(x, y, z):
     return math.sqrt(x * x + y * y + z * z)
 
 
+def calculate_empirical_release_lead(vx, vy, configured_distance_m):
+    """Return a bounded fixed-distance offset along the car velocity direction."""
+    vx = safe_float(vx, 0.0)
+    vy = safe_float(vy, 0.0)
+    distance = clamp(
+        safe_float(configured_distance_m, 0.0),
+        -0.30,
+        0.30,
+    )
+    speed = norm2(vx, vy)
+    direction_valid = speed >= 0.05
+    if direction_valid:
+        direction_x = vx / speed
+        direction_y = vy / speed
+        lead_x = direction_x * distance
+        lead_y = direction_y * distance
+    else:
+        direction_x = 0.0
+        direction_y = 0.0
+        lead_x = 0.0
+        lead_y = 0.0
+    return {
+        "configured_distance_m": distance,
+        "speed_mps": speed,
+        "direction_valid": direction_valid,
+        "direction_x": direction_x,
+        "direction_y": direction_y,
+        "lead_x": lead_x,
+        "lead_y": lead_y,
+    }
+
+
 def limit_xy(x, y, maximum):
     length = norm2(x, y)
     if length <= maximum or length < 1e-9:
@@ -416,6 +448,8 @@ class AirGroundMissionFSM:
         # 最近一次移动目标控制指标，供地面站显示相对位置/相对速度误差。
         self.last_follow_metrics = None
         self.last_follow_metrics_time = None
+        # 最近一次投放目标偏置分解，供状态遥测和投放触发日志使用。
+        self.last_drop_lead = None
 
         self.last_mode_request = rospy.Time(0)
         self.last_arm_request = rospy.Time(0)
@@ -792,6 +826,7 @@ class AirGroundMissionFSM:
         self.drop_hover_started_by_stable = False
         self.last_follow_metrics = None
         self.last_follow_metrics_time = None
+        self.last_drop_lead = None
         self.landing_target_z = None
         self.home_land_target_z = None
         self.drop_target_z = None
@@ -1181,6 +1216,34 @@ class AirGroundMissionFSM:
 
         return -release_local_x, -release_local_y
 
+    def drop_target_offset(self, car):
+        """Combine physical outlet compensation with signed empirical lead."""
+        physical_x, physical_y = self.drop_uav_center_offset()
+        lead = calculate_empirical_release_lead(
+            car.get("vx", 0.0),
+            car.get("vy", 0.0),
+            self.drop_cfg.get("empirical_release_lead_distance_m", 0.0),
+        )
+        combined_x = physical_x + lead["lead_x"]
+        combined_y = physical_y + lead["lead_y"]
+        self.last_drop_lead = dict(lead)
+        self.last_drop_lead.update({
+            "physical_offset_x": physical_x,
+            "physical_offset_y": physical_y,
+            "combined_offset_x": combined_x,
+            "combined_offset_y": combined_y,
+        })
+        if (
+            not lead["direction_valid"]
+            and abs(lead["configured_distance_m"]) > 1e-6
+        ):
+            rospy.logwarn_throttle(
+                1.0,
+                "Empirical drop lead disabled: car speed %.3fm/s is below 0.05m/s.",
+                lead["speed_mps"],
+            )
+        return combined_x, combined_y
+
     def drop_platform_z(self):
         """返回投放平台表面在 MAVROS local Z 中的高度。"""
         platform_height = safe_float(
@@ -1501,9 +1564,21 @@ class AirGroundMissionFSM:
         self.drop_retry_count = 0
         self.drop_ack_success = False
         self.drop_ack_text = ""
+        lead = self.last_drop_lead or {}
         rospy.logwarn(
-            "Drop action triggered: reason=%s action_id=%d",
-            str(trigger_reason), self.drop_action_id,
+            "Drop action triggered: reason=%s action_id=%d "
+            "distance=%.3f speed=%.3f direction=(%.3f,%.3f) "
+            "lead=(%.3f,%.3f) combined=(%.3f,%.3f)",
+            str(trigger_reason),
+            self.drop_action_id,
+            safe_float(lead.get("configured_distance_m", 0.0), 0.0),
+            safe_float(lead.get("speed_mps", 0.0), 0.0),
+            safe_float(lead.get("direction_x", 0.0), 0.0),
+            safe_float(lead.get("direction_y", 0.0), 0.0),
+            safe_float(lead.get("lead_x", 0.0), 0.0),
+            safe_float(lead.get("lead_y", 0.0), 0.0),
+            safe_float(lead.get("combined_offset_x", 0.0), 0.0),
+            safe_float(lead.get("combined_offset_y", 0.0), 0.0),
         )
         self.send_drop_command()
         self.enter_state("DROP_WAIT_ACK")
@@ -1788,7 +1863,7 @@ class AirGroundMissionFSM:
                 ),
             )
 
-        drop_offset = self.drop_uav_center_offset()
+        drop_offset = self.drop_target_offset(car)
         metrics_preview = self.follow_metrics(car, target_offset_xy=drop_offset)
         vision_ok = self.vision_valid()
         vision_age = self.vision_age()
@@ -1870,7 +1945,7 @@ class AirGroundMissionFSM:
         )
         if car is None:
             return
-        drop_offset = self.drop_uav_center_offset()
+        drop_offset = self.drop_target_offset(car)
         metrics = self.publish_drop_follow_control(
             car, self.drop_final_target_z(), dt, "drop_align",
             target_offset_xy=drop_offset,
@@ -1940,7 +2015,7 @@ class AirGroundMissionFSM:
         if car is not None:
             self.publish_drop_follow_control(
                 car, self.drop_final_target_z(), dt, "drop_align",
-                target_offset_xy=self.drop_uav_center_offset(),
+                target_offset_xy=self.drop_target_offset(car),
             )
         if self.drop_ack_success:
             self.drop_done_time = rospy.Time.now()
@@ -2687,6 +2762,18 @@ class AirGroundMissionFSM:
                 "release_offset_y_m": safe_float(
                     self.drop_cfg.get("release_offset_y_m", 0.0), 0.0
                 ),
+                "empirical_release_lead_distance_m": clamp(
+                    safe_float(
+                        self.drop_cfg.get(
+                            "empirical_release_lead_distance_m",
+                            0.0,
+                        ),
+                        0.0,
+                    ),
+                    -0.30,
+                    0.30,
+                ),
+                "empirical_release_lead": deepcopy(self.last_drop_lead),
             },
         }
         text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
