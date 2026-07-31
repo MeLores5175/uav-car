@@ -32,6 +32,22 @@ mission:
     # （调参）起飞软超时时允许的最大高度误差
     soft_timeout_z_error_m: 0.22
 
+    # 起飞和任务一固定悬停专用水平控制参数
+    horizontal_position_kp: 0.80
+    max_horizontal_speed_mps: 0.35
+    max_horizontal_accel_mps2: 0.35
+    max_horizontal_jerk_mps3: 0.60
+
+    # 快速档垂直起飞控制参数
+    vertical_position_kp: 0.90
+    max_vertical_speed_mps: 0.55
+    max_vertical_accel_mps2: 0.75
+
+    # 固定悬停3秒完成后的宽松退出安全门槛
+    hover_exit_xy_tolerance_m: 0.30
+    hover_exit_z_tolerance_m: 0.18
+    hover_exit_speed_tolerance_mps: 0.35
+
   fcu:
     offboard_prestream_s: 1.0
     mode_request_interval_s: 1.0
@@ -46,22 +62,16 @@ mission:
     offset_forward_m: 0.0
     # （调参）无人机跟随点相对小车平台中心的左右偏置
     offset_left_m: 0.0
-    # position+velocity setpoint 同时发送时，PX4 已自行对位置误差闭环。
-    # feedforward_only 仅把小车速度作为前馈，避免 FSM 再次对位置误差做 P/D，造成双重闭环蛇形。
-    velocity_setpoint_mode: feedforward_only   # feedforward_only 或 legacy_outer_pd
-    # （调参）小车速度前馈增益，决定伴飞速度跟随强度
+    # 动态降落专用状态沿用位置+速度前馈控制；投掷任务使用下方独立参数组。
+    # （调参）动态降落专用状态的小车速度前馈增益
     velocity_feedforward_gain: 1.0
-    # （调参）旧版外环位置比例增益，仅 legacy_outer_pd 模式使用
-    position_kp: 0.95                          # 仅 legacy_outer_pd 使用
-    # （调参）旧版相对速度微分增益，仅 legacy_outer_pd 模式使用
-    relative_velocity_kd: 0.35                # 仅 legacy_outer_pd 使用
     # （调参）跟随阶段高度误差对应垂直速度的比例增益
     vertical_kp: 0.90
-    # （调参）截获和伴飞阶段允许的最大水平速度
+    # （调参）动态降落专用状态的水平速度上限
     max_horizontal_speed_mps: 0.75
-    # （调参）截获和伴飞阶段允许的最大水平加速度
+    # （调参）动态降落专用状态的水平加速度上限
     max_horizontal_accel_mps2: 0.55
-    # （调参）截获和伴飞阶段允许的最大水平加速度变化率
+    # （调参）动态降落专用状态的水平加速度变化率上限
     max_horizontal_jerk_mps3: 0.90       # 半圆速度方向连续变化时限制加速度突变
     # （调参）跟随阶段允许的最大垂直速度
     max_vertical_speed_mps: 0.45
@@ -85,6 +95,41 @@ mission:
     stable_relative_speed_mps: 0.10
     # （调参）稳定伴飞条件需要连续保持的时间
     stable_time_s: 0.50
+
+    # 投掷任务移动目标控制：ROS计算完整XY速度，只向PX4发布XY速度设定值。
+    velocity_profiles:
+      intercept:
+        velocity_feedforward_gain: 1.00
+        position_kp: 0.95
+        relative_velocity_kd: 0.30
+        max_horizontal_speed_mps: 0.75
+        max_correction_speed_mps: 0.35
+        max_horizontal_accel_mps2: 0.55
+        max_horizontal_jerk_mps3: 0.90
+      follow:
+        velocity_feedforward_gain: 1.00
+        position_kp: 0.75
+        relative_velocity_kd: 0.25
+        max_horizontal_speed_mps: 0.75
+        max_correction_speed_mps: 0.25
+        max_horizontal_accel_mps2: 0.45
+        max_horizontal_jerk_mps3: 0.75
+      drop_descent:
+        velocity_feedforward_gain: 1.00
+        position_kp: 0.65
+        relative_velocity_kd: 0.25
+        max_horizontal_speed_mps: 0.75
+        max_correction_speed_mps: 0.18
+        max_horizontal_accel_mps2: 0.30
+        max_horizontal_jerk_mps3: 0.55
+      drop_align:
+        velocity_feedforward_gain: 1.00
+        position_kp: 0.55
+        relative_velocity_kd: 0.30
+        max_horizontal_speed_mps: 0.75
+        max_correction_speed_mps: 0.12
+        max_horizontal_accel_mps2: 0.22
+        max_horizontal_jerk_mps3: 0.40
 
   estimator:
     # （调参）小车遥测数据判定失效的超时时间
@@ -141,8 +186,6 @@ mission:
     descent_final_rate_mps: 0.10
     # （调参）切换到慢速下降的剩余高度范围
     descent_slow_height_m: 0.25      # 距最终目标高度小于该值时切换慢速下降
-    # （调参）下降过程中水平跟随速度的缩放比例
-    descent_horizontal_speed_scale: 0.75
     # （调参）超过该水平误差时暂停继续下降
     descent_pause_position_error_m: 0.14
     # （调参）超过该相对速度时暂停继续下降
