@@ -451,6 +451,12 @@ class AirGroundMissionFSM:
         # 最近一次投放目标偏置分解，供状态遥测和投放触发日志使用。
         self.last_drop_lead = None
 
+        # 截获阶段自适应预测时间状态。预测距离使用未外推的小车当前位置计算，
+        # 预测时间则在远/近距离参数之间连续变化，并经过变化率限制。
+        self.intercept_prediction_filtered_s = None
+        self.intercept_prediction_raw_s = None
+        self.intercept_current_distance_m = None
+
         self.last_mode_request = rospy.Time(0)
         self.last_arm_request = rospy.Time(0)
         self.wait_fcu_prestream_start = None
@@ -827,6 +833,9 @@ class AirGroundMissionFSM:
         self.last_follow_metrics = None
         self.last_follow_metrics_time = None
         self.last_drop_lead = None
+        self.intercept_prediction_filtered_s = None
+        self.intercept_prediction_raw_s = None
+        self.intercept_current_distance_m = None
         self.landing_target_z = None
         self.home_land_target_z = None
         self.drop_target_z = None
@@ -861,6 +870,12 @@ class AirGroundMissionFSM:
             self.drop_target_z = None
         if new_state != "DYNAMIC_DESCENT":
             self.touchdown_since = None
+        if new_state == "INTERCEPT":
+            # 每次重新进入截获阶段时，让预测时间从当前距离对应值开始，
+            # 避免沿用上一次任务或上一次截获的滤波状态。
+            self.intercept_prediction_filtered_s = None
+            self.intercept_prediction_raw_s = None
+            self.intercept_current_distance_m = None
         if new_state in {"FOLLOW_DROP", "FOLLOW_CD"}:
             self.publish_event_once("UAV_FOLLOW_ESTABLISHED")
         elif new_state == "PLATFORM_DWELL":
@@ -1772,56 +1787,226 @@ class AirGroundMissionFSM:
             speed,
         )
 
-    def handle_intercept(self, dt):
-        # 截获阶段不追逐小车当前点，而是追逐“当前估计位置 + 速度×预测时间”。
-        # update_car_estimator() 返回的 x/y 已经是 prediction_s 秒后的预测坐标。
-        prediction_s = safe_float(
-            self.follow_cfg.get("intercept_prediction_s", 0.60), 0.60
+    def adaptive_intercept_prediction_s(self, distance_m, dt):
+        """根据无人机到小车当前估计位置的距离连续调整截获预测时间。"""
+        far_prediction = safe_float(
+            self.follow_cfg.get("intercept_prediction_far_s", 0.20),
+            0.20,
         )
-        car = self.update_car_estimator(prediction_s)
-        if car is None:
+        near_prediction = safe_float(
+            self.follow_cfg.get("intercept_prediction_near_s", 0.05),
+            0.05,
+        )
+        far_distance = safe_float(
+            self.follow_cfg.get("intercept_prediction_far_distance_m", 0.80),
+            0.80,
+        )
+        near_distance = safe_float(
+            self.follow_cfg.get("intercept_prediction_near_distance_m", 0.50),
+            0.50,
+        )
+
+        # 配置异常时退回原固定预测时间，避免除零或反向插值。
+        if far_distance <= near_distance:
+            raw_prediction = safe_float(
+                self.follow_cfg.get("intercept_prediction_s", far_prediction),
+                far_prediction,
+            )
+            rospy.logwarn_throttle(
+                2.0,
+                "Invalid adaptive intercept distances: far=%.3f near=%.3f; "
+                "fallback prediction=%.3fs",
+                far_distance,
+                near_distance,
+                raw_prediction,
+            )
+        else:
+            ratio = clamp(
+                (safe_float(distance_m, far_distance) - near_distance)
+                / (far_distance - near_distance),
+                0.0,
+                1.0,
+            )
+            raw_prediction = (
+                near_prediction
+                + ratio * (far_prediction - near_prediction)
+            )
+
+        prediction_low = min(near_prediction, far_prediction)
+        prediction_high = max(near_prediction, far_prediction)
+        raw_prediction = clamp(raw_prediction, prediction_low, prediction_high)
+        self.intercept_prediction_raw_s = raw_prediction
+
+        slew_rate = max(
+            0.0,
+            safe_float(
+                self.follow_cfg.get(
+                    "intercept_prediction_slew_rate_s_per_s",
+                    0.50,
+                ),
+                0.50,
+            ),
+        )
+        if self.intercept_prediction_filtered_s is None:
+            self.intercept_prediction_filtered_s = raw_prediction
+        elif slew_rate <= 1e-9:
+            self.intercept_prediction_filtered_s = raw_prediction
+        else:
+            max_change = slew_rate * max(float(dt), 0.01)
+            delta = clamp(
+                raw_prediction - self.intercept_prediction_filtered_s,
+                -max_change,
+                max_change,
+            )
+            self.intercept_prediction_filtered_s += delta
+
+        self.intercept_prediction_filtered_s = clamp(
+            self.intercept_prediction_filtered_s,
+            prediction_low,
+            prediction_high,
+        )
+        return self.intercept_prediction_filtered_s
+
+    def handle_intercept(self, dt):
+        # 先更新并取得“未向前外推”的小车当前融合位置。自适应预测所用距离
+        # 必须基于当前点，不能使用已经预测后的目标误差，否则会形成反馈耦合。
+        car_now = self.update_car_estimator(0.0)
+        if car_now is None:
+            self.intercept_current_distance_m = None
             self.publish_position_velocity_yaw(
                 self.home_x, self.home_y, self.home_z + self.cruise_height,
                 0.0, 0.0, 0.0, self.fixed_yaw,
             )
             return
+
+        if self.current_pose is None:
+            return
+        p = self.current_pose.pose.position
+        current_distance = norm2(car_now["x"] - p.x, car_now["y"] - p.y)
+        self.intercept_current_distance_m = current_distance
+
+        prediction_s = self.adaptive_intercept_prediction_s(
+            current_distance,
+            dt,
+        )
+        telemetry = self.car_abs_measurement()
+        car = self.predict_car_motion(car_now, telemetry, prediction_s)
+        car["prediction_s"] = prediction_s
+        # predict_car_motion() 从 car_now 复制赛段、航向等字段；这里只覆盖
+        # 当前截获使用的预测结果，供控制与 /uav/mission_status 同步查看。
+        self.car_estimate = deepcopy(car)
+
         metrics = self.publish_drop_follow_control(
             car, self.home_z + self.cruise_height, dt, "intercept"
+        )
+        rospy.loginfo_throttle(
+            0.5,
+            "Adaptive intercept: current_distance=%.3fm "
+            "prediction_raw=%.3fs prediction_used=%.3fs "
+            "target_error=%.3fm relative_speed=%.3fm/s",
+            current_distance,
+            safe_float(self.intercept_prediction_raw_s, prediction_s),
+            prediction_s,
+            metrics["position_error"] if metrics is not None else -1.0,
+            metrics["relative_speed"] if metrics is not None else -1.0,
         )
         if self.follow_is_stable(metrics, strict=False):
             self.enter_state("FOLLOW_DROP" if self.mission_type == "drop" else "FOLLOW_CD")
 
     def handle_follow_drop(self, dt):
+        """
+        任务一高空伴飞等待投放。
+
+        无人机可以在 AB、BC 甚至进入 CD 前就完成截获并保持稳定，但这些
+        赛段绝不允许预累计“进入投放下降”的稳定时间。只有进入配置的 CD
+        下降窗口后，才从零开始重新判断严格伴飞条件；连续满足后才进入
+        DROP_DESCENT。
+        """
         car = self.update_car_estimator(
             safe_float(self.follow_cfg.get("follow_prediction_s", 0.18), 0.18)
         )
         if car is None:
             return
+
         metrics = self.publish_drop_follow_control(
             car, self.home_z + self.cruise_height, dt, "follow"
         )
-        segment = self.drop_cfg.get("segment_name", "CD")
+
+        required_segment = str(
+            self.drop_cfg.get("segment_name", "CD")
+        ).upper()
         descent_start = safe_float(
             self.drop_cfg.get("descent_window_start", 0.05), 0.05
         )
-        end = safe_float(self.drop_cfg.get("window_end", 0.78), 0.78)
-        if (
-            self.in_segment_window(car, segment, descent_start, end) and
-            self.follow_is_stable(metrics, strict=True)
-        ):
-            self.drop_target_z = max(
-                self.drop_final_target_z(),
-                min(
-                    self.current_pose.pose.position.z,
-                    self.home_z + self.cruise_height,
-                ),
+        window_end = safe_float(
+            self.drop_cfg.get("window_end", 0.78), 0.78
+        )
+        car_segment = str(car.get("segment", "UNKNOWN")).upper()
+        progress = safe_float(car.get("segment_progress", -1.0), -1.0)
+
+        segment_ok = car_segment == required_segment
+        entry_window_ok = (
+            segment_ok and descent_start <= progress <= window_end
+        )
+
+        # 将门控状态写入任务状态，实飞时可直接查看为什么尚未进入下降。
+        if metrics is not None:
+            metrics.update({
+                "drop_entry_required_segment": required_segment,
+                "drop_entry_car_segment": car_segment,
+                "drop_entry_segment_progress": progress,
+                "drop_entry_segment_ok": segment_ok,
+                "drop_entry_window_ok": entry_window_ok,
+                "drop_entry_waiting_for_cd": not entry_window_ok,
+            })
+            self.last_follow_metrics = deepcopy(metrics)
+            self.last_follow_metrics_time = rospy.Time.now()
+
+        if not entry_window_ok:
+            # 核心保证：AB/BC 中即使位置、速度和视觉全部满足，也不能把
+            # 稳定计时带入 CD。进入 CD 后必须重新连续满足 strict 条件。
+            self.follow_stable_since = None
+
+            if segment_ok and progress > window_end:
+                self.enter_return_home("DROP_WINDOW_MISSED")
+                return
+
+            rospy.loginfo_throttle(
+                0.5,
+                "Drop entry gated: waiting for %s window %.2f..%.2f; "
+                "car_segment=%s progress=%.3f. Keep following at cruise height.",
+                required_segment,
+                descent_start,
+                window_end,
+                car_segment,
+                progress,
             )
-            self.enter_state("DROP_DESCENT")
-        elif (
-            str(car.get("segment", "")).upper() == str(segment).upper() and
-            safe_float(car.get("segment_progress", -1.0)) > end
-        ):
-            self.enter_return_home("DROP_WINDOW_MISSED")
+            return
+
+        # 进入 CD 指定窗口后才开始重新累计严格伴飞稳定时间。
+        stable_in_cd = self.follow_is_stable(metrics, strict=True)
+        rospy.loginfo_throttle(
+            0.5,
+            "Drop entry in %s: progress=%.3f pos_err=%.3f rel_speed=%.3f "
+            "vision=%s stable=%s",
+            required_segment,
+            progress,
+            metrics["position_error"] if metrics is not None else -1.0,
+            metrics["relative_speed"] if metrics is not None else -1.0,
+            self.vision_valid(),
+            stable_in_cd,
+        )
+        if not stable_in_cd:
+            return
+
+        self.drop_target_z = max(
+            self.drop_final_target_z(),
+            min(
+                self.current_pose.pose.position.z,
+                self.home_z + self.cruise_height,
+            ),
+        )
+        self.enter_state("DROP_DESCENT")
 
     def handle_drop_descent(self, dt):
         """任务一：保持 XY 跟车，同时逐步降低 Z 目标到投放高度。"""
@@ -2814,7 +2999,28 @@ class AirGroundMissionFSM:
                 "prediction_model": follow.get("prediction_model"),
                 "prediction_s": follow.get("prediction_s"),
                 "intercept_prediction_s": safe_float(
-                    self.follow_cfg.get("intercept_prediction_s", 0.60), 0.60
+                    self.follow_cfg.get("intercept_prediction_s", 0.20), 0.20
+                ),
+                "intercept_prediction_raw_s": self.intercept_prediction_raw_s,
+                "intercept_prediction_used_s": self.intercept_prediction_filtered_s,
+                "intercept_current_distance_m": self.intercept_current_distance_m,
+                "intercept_prediction_far_s": safe_float(
+                    self.follow_cfg.get("intercept_prediction_far_s", 0.20), 0.20
+                ),
+                "intercept_prediction_near_s": safe_float(
+                    self.follow_cfg.get("intercept_prediction_near_s", 0.05), 0.05
+                ),
+                "drop_entry_required_segment": follow.get(
+                    "drop_entry_required_segment"
+                ),
+                "drop_entry_car_segment": follow.get("drop_entry_car_segment"),
+                "drop_entry_segment_progress": follow.get(
+                    "drop_entry_segment_progress"
+                ),
+                "drop_entry_segment_ok": follow.get("drop_entry_segment_ok"),
+                "drop_entry_window_ok": follow.get("drop_entry_window_ok"),
+                "drop_entry_waiting_for_cd": follow.get(
+                    "drop_entry_waiting_for_cd"
                 ),
             },
             "vision": {

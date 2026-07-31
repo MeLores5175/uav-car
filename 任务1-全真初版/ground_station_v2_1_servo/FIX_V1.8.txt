@@ -1,8 +1,0 @@
-V1.8 无人机调试页
-
-1. 主页右上角“设置”旁新增“调试”。
-2. 新增 /debug 独立页面，保留比赛地图、无人机位置、航向、轨迹与状态。
-3. 调试页命令只发送给无人机，不发送给小车：PING、STATUS、BOOT、START、LAND、RESET、STOP_NODES。
-4. 直接 START 必须按住 1 秒，发送格式 CMD:<id>:START:<run_id>:T1/T2。
-5. LAND 保留滑块确认；STOP_NODES、RESET、BOOT 在遥测显示已解锁时禁止点击，服务端也会拒绝。
-6. 后端新增白名单接口 /api/debug/uav_command，不支持任意原始报文。

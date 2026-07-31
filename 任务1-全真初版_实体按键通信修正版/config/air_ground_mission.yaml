@@ -77,22 +77,34 @@ mission:
     max_vertical_speed_mps: 0.45
     # （调参）跟随阶段允许的最大垂直加速度
     max_vertical_accel_mps2: 0.60
-    # （调参）截获小车时向前预测小车位置的时间
+    # 截获阶段自适应预测：远距离保留较长预测，靠近后连续缩短。
+    # intercept_prediction_s 保留为兼容/异常配置时的回退值。
     intercept_prediction_s: 0.20
+    # （调参）距离较远时使用的截获预测时间
+    intercept_prediction_far_s: 0.20
+    # （调参）靠近小车后使用的最短截获预测时间
+    intercept_prediction_near_s: 0.05
+    # （调参）达到或超过该距离时使用 far_s
+    intercept_prediction_far_distance_m: 0.80
+    # （调参）达到或小于该距离时使用 near_s。
+    # 当前截获成功位置门槛为0.45m，因此设为0.50m，保证判定截获前已收短预测。
+    intercept_prediction_near_distance_m: 0.50
+    # （调参）预测时间每秒允许变化的最大秒数，抑制目标点突跳
+    intercept_prediction_slew_rate_s_per_s: 0.50
     # （调参）稳定伴飞时向前预测小车位置的时间
     follow_prediction_s: 0.08
 
     # （调参）截获完成判定允许的水平位置误差
-    acquire_position_error_m: 0.28
+    acquire_position_error_m: 0.45
     # （调参）截获完成判定允许的相对速度
     acquire_relative_speed_mps: 0.25
     # （调参）截获条件需要连续保持的时间
     acquire_stable_time_s: 0.20
 
     # （调参）稳定伴飞判定允许的水平位置误差
-    stable_position_error_m: 0.12
+    stable_position_error_m: 0.28
     # （调参）稳定伴飞判定允许的相对速度
-    stable_relative_speed_mps: 0.10
+    stable_relative_speed_mps: 0.18
     # （调参）稳定伴飞条件需要连续保持的时间
     stable_time_s: 0.50
 
@@ -154,7 +166,7 @@ mission:
     # （调参）恒曲率预测的转弯方向符号
     curve_turn_direction: 1.0            # 当前跑道模型中 BC/DA 的 local yaw 均随里程增大
     # （调参）视觉数据参与融合所需的最低置信度
-    vision_min_confidence: 0.55
+    vision_min_confidence: 0.20
     # （调参）视觉目标连续稳定后才采用的帧数
     vision_min_stable_count: 2
     car_state_is_relative_home: true
@@ -163,6 +175,8 @@ mission:
 
   drop:
     # 任务一只在 C-D 直线段内下降和投放。
+    # AB/BC 中即使伴飞条件已经满足，也只保持高空伴飞并清零投放入口计时；
+    # 进入 CD 的下降窗口后，必须重新连续满足严格伴飞条件才允许下降。
     segment_name: CD
 
     # 进入 C-D 后先边跟车边下降。下降可在正式投放窗口之前开始，
@@ -394,7 +408,7 @@ vision:
   max_prediction_residual_px: 42.0
   max_diameter_change_ratio: 0.28
   # （调参）视觉结果允许发布的最低置信度
-  min_publish_confidence: 0.45
+  min_publish_confidence: 0.15
 
   adaptive_block_size: 41
   adaptive_c: 7
