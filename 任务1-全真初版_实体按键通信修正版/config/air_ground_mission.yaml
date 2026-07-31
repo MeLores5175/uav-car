@@ -296,6 +296,28 @@ mission:
     max_vertical_accel_mps2: 0.30
     # （调参）返回起降点时水平位置误差对应速度的比例增益
     position_kp: 0.55
+
+    # ==================== 任务1：到H点上方直接AUTO.LAND ====================
+    # 任务1不再先下降到0.3m；无人机保持 height_m 高度飞到H点上方，
+    # 进入宽松到达区域后尝试连续稳定0.7s，满足或等待超过3s即直接AUTO.LAND。
+    # （调参）认为已经到达H点上方、可以开始0.7s判稳的水平误差
+    task1_arrival_position_tolerance_m: 0.18
+    # （调参）认为已经到达返航目标高度、可以开始0.7s判稳的高度误差
+    task1_arrival_z_tolerance_m: 0.18
+    # （调参）任务1 AUTO.LAND 前连续判稳允许的水平位置误差
+    task1_land_position_tolerance_m: 0.08
+    # （调参）任务1 AUTO.LAND 前连续判稳允许的高度误差
+    task1_land_z_tolerance_m: 0.15
+    # （调参）任务1 AUTO.LAND 前连续判稳允许的水平速度
+    task1_land_horizontal_speed_mps: 0.13
+    # （调参）任务1 AUTO.LAND 前连续判稳允许的垂直速度
+    task1_land_vertical_speed_mps: 0.15
+    # （调参）任务1满足上述条件后需要连续稳定的时间
+    task1_land_stable_time_s: 0.70
+    # （调参）进入H点判稳阶段后最多等待时间；超时无条件请求AUTO.LAND
+    task1_land_stabilize_timeout_s: 3.00
+
+    # ==================== 任务2：保留原低空交接流程 ====================
     # （调参）进入降落阶段前允许的起降点水平误差
     position_tolerance_m: 0.08
     # （调参）进入降落阶段前允许的高度误差
@@ -305,8 +327,8 @@ mission:
     # （调参）返航到位条件需要连续保持的时间
     stable_time_s: 1.00
 
-    # 到达H点上方后仍保持OFFBOARD，边修正XY边缓慢下降；
-    # 只有降到较低高度且XY再次稳定后，才交给PX4 AUTO.LAND完成最后着陆。
+    # 以下参数仅供任务2返航使用：到达H点上方后仍保持OFFBOARD，
+    # 边修正XY边缓慢下降，降到较低高度后再交给PX4 AUTO.LAND。
     # （调参）受控下降阶段允许的最大水平修正速度
     landing_max_horizontal_speed_mps: 0.25
     # （调参）受控下降阶段允许的最大水平修正加速度
