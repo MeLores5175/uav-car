@@ -2419,6 +2419,29 @@ class AirGroundMissionFSM:
         if metrics is None:
             return
         xy_err, z_err, speed = metrics
+
+        if self.mission_type == "drop":
+            # 任务1：只要已经飞到H点上方的宽松到达区域，就进入定点判稳阶段。
+            # HOME_LAND 中保持当前返航高度，不再执行OFFBOARD受控下降；
+            # 连续稳定0.7s或等待3s超时后，直接切换PX4 AUTO.LAND。
+            arrived = (
+                xy_err <= safe_float(
+                    self.return_cfg.get("task1_arrival_position_tolerance_m", 0.18),
+                    0.18,
+                ) and
+                z_err <= safe_float(
+                    self.return_cfg.get("task1_arrival_z_tolerance_m", 0.18),
+                    0.18,
+                )
+            )
+            if arrived:
+                self.expected_disarm = True
+                self.auto_land_prepare_start = None
+                self.auto_land_start = None
+                self.enter_state("HOME_LAND")
+            return
+
+        # 任务2保持原返航到位判定与低空AUTO.LAND交接流程。
         ready = self.update_stable_timer(
             xy_err <= safe_float(self.return_cfg.get("position_tolerance_m", 0.16), 0.16) and
             z_err <= safe_float(self.return_cfg.get("z_tolerance_m", 0.10), 0.10) and
@@ -2432,10 +2455,91 @@ class AirGroundMissionFSM:
             self.auto_land_start = None
             self.enter_state("HOME_LAND")
 
+    def handle_task1_home_land(self, now, dt):
+        """任务1在H点返航高度判稳，满足条件或超时后直接切AUTO.LAND。"""
+        if self.current_state.mode == "AUTO.LAND":
+            if self.auto_land_start is None:
+                self.auto_land_start = now
+            return
+        if self.current_pose is None:
+            return
+
+        target_z = self.home_z + safe_float(self.return_cfg.get("height_m", 1.20), 1.20)
+        metrics = self.publish_point_control(
+            self.home_x,
+            self.home_y,
+            target_z,
+            max(float(dt), 0.01),
+            safe_float(self.return_cfg.get("max_horizontal_speed_mps", 0.45), 0.45),
+            safe_float(self.return_cfg.get("max_horizontal_accel_mps2", 0.30), 0.30),
+            safe_float(self.return_cfg.get("position_kp", 0.55), 0.55),
+            max_jerk=safe_float(
+                self.return_cfg.get("max_horizontal_jerk_mps3", 0.70), 0.70
+            ),
+            max_vz=safe_float(
+                self.return_cfg.get("max_vertical_speed_mps", 0.22), 0.22
+            ),
+            max_az=safe_float(
+                self.return_cfg.get("max_vertical_accel_mps2", 0.30), 0.30
+            ),
+        )
+        self.try_offboard_and_arm(allow_arm=True)
+        if metrics is None:
+            return
+
+        xy_err, z_err, _ = metrics
+        horizontal_speed = norm2(self.current_vel[0], self.current_vel[1])
+        vertical_speed = abs(self.current_vel[2])
+        stable_condition = (
+            xy_err <= safe_float(
+                self.return_cfg.get("task1_land_position_tolerance_m", 0.15),
+                0.15,
+            ) and
+            z_err <= safe_float(
+                self.return_cfg.get("task1_land_z_tolerance_m", 0.15),
+                0.15,
+            ) and
+            horizontal_speed <= safe_float(
+                self.return_cfg.get("task1_land_horizontal_speed_mps", 0.18),
+                0.18,
+            ) and
+            vertical_speed <= safe_float(
+                self.return_cfg.get("task1_land_vertical_speed_mps", 0.15),
+                0.15,
+            )
+        )
+        stable_ready = self.update_stable_timer(
+            stable_condition,
+            "home_land_stable_since",
+            safe_float(self.return_cfg.get("task1_land_stable_time_s", 0.70), 0.70),
+        )
+        stabilize_timeout = safe_float(
+            self.return_cfg.get("task1_land_stabilize_timeout_s", 3.0),
+            3.0,
+        )
+        timeout_ready = self.state_elapsed() >= stabilize_timeout
+
+        if stable_ready or timeout_ready:
+            if self.auto_land_prepare_start is None:
+                self.auto_land_prepare_start = now
+                if stable_ready:
+                    rospy.logwarn(
+                        "Task1 home stable: xy=%.3fm z=%.3fm vxy=%.3fm/s vz=%.3fm/s; request AUTO.LAND.",
+                        xy_err, z_err, horizontal_speed, vertical_speed,
+                    )
+                else:
+                    rospy.logwarn(
+                        "Task1 home stabilization timeout %.2fs: xy=%.3fm z=%.3fm vxy=%.3fm/s vz=%.3fm/s; force AUTO.LAND.",
+                        stabilize_timeout, xy_err, z_err, horizontal_speed, vertical_speed,
+                    )
+            self.request_mode("AUTO.LAND")
+
     def handle_auto_land(self, emergency=False, dt=0.02):
         now = rospy.Time.now()
 
-        if emergency:
+        if not emergency and self.mission_type == "drop":
+            self.handle_task1_home_land(now, dt)
+        elif emergency:
             if self.current_pose is not None and self.current_state.mode != "AUTO.LAND":
                 p = self.current_pose.pose.position
                 self.publish_position_velocity_yaw(
