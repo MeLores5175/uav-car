@@ -83,11 +83,11 @@ mission:
     follow_prediction_s: 0.08
 
     # （调参）截获完成判定允许的水平位置误差
-    acquire_position_error_m: 0.20
+    acquire_position_error_m: 0.28
     # （调参）截获完成判定允许的相对速度
-    acquire_relative_speed_mps: 0.18
+    acquire_relative_speed_mps: 0.25
     # （调参）截获条件需要连续保持的时间
-    acquire_stable_time_s: 0.45
+    acquire_stable_time_s: 0.20
 
     # （调参）稳定伴飞判定允许的水平位置误差
     stable_position_error_m: 0.12
@@ -101,9 +101,9 @@ mission:
       intercept:
         velocity_feedforward_gain: 1.00
         position_kp: 0.95
-        relative_velocity_kd: 0.30
+        relative_velocity_kd: 0.40
         max_horizontal_speed_mps: 0.75
-        max_correction_speed_mps: 0.35
+        max_correction_speed_mps: 0.35 
         max_horizontal_accel_mps2: 0.55
         max_horizontal_jerk_mps3: 0.90
       follow:
