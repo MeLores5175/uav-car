@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>陆空协同无人机系统地面站｜V2.1 坐标修正版</title>
+  <link rel="stylesheet" href="/static/style.css?v=2.1">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>陆空协同无人机系统地面站 <span class="version-chip">V2.1 单路舵机投放版</span></h1>
+    </div>
+    <div class="header-status">
+      <a class="header-action-btn header-debug-btn" href="/debug?v=2.1" target="_blank" rel="noopener">调试</a>
+      <a class="header-action-btn" href="/settings" target="_blank" rel="noopener">设置</a>
+      <span id="wsBadge" class="status-badge offline">网页连接中</span>
+      <span id="clockText" class="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <section class="map-column">
+      <article class="panel map-panel">
+        <div class="panel-title-row">
+          <div>
+            <h2>比赛场地实时位置</h2>
+          </div>
+          <div class="map-actions">
+            <button id="clearTrailBtn" class="btn btn-ghost btn-small">清空轨迹</button>
+          </div>
+        </div>
+
+        <div class="map-stage">
+          <svg id="fieldSvg" viewBox="0 0 500 400" role="img" aria-label="横向比赛场地图">
+            <defs>
+              <pattern id="smallGrid" width="25" height="25" patternUnits="userSpaceOnUse">
+                <path d="M 25 0 L 0 0 0 25" fill="none" stroke="rgba(25,65,105,.08)" stroke-width="0.6"/>
+              </pattern>
+              <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
+                <rect width="50" height="50" fill="url(#smallGrid)"/>
+                <path d="M 50 0 L 0 0 0 50" fill="none" stroke="rgba(25,65,105,.15)" stroke-width="0.9"/>
+              </pattern>
+              <filter id="markerShadow" x="-80%" y="-80%" width="260%" height="260%">
+                <feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity="0.35"/>
+              </filter>
+            </defs>
+
+            <rect x="2" y="2" width="496" height="396" rx="2" class="field-bg"/>
+            <rect x="2" y="2" width="496" height="396" rx="2" fill="url(#grid)"/>
+            <rect x="2" y="2" width="496" height="396" rx="2" class="field-border"/>
+
+            <!-- 横向后的 H 起降区 -->
+            <circle cx="75" cy="75" r="37.5" class="map-line"/>
+            <circle cx="75" cy="75" r="25" class="map-line"/>
+            <text x="75" y="80" class="map-label center-label">H</text>
+
+            <!-- 小车闭合循线轨迹：由原场地顺时针旋转 90° -->
+            <path d="M 200 150 L 350 150 A 75 75 0 0 1 350 300 L 200 300 A 75 75 0 0 1 200 150" class="track-line"/>
+            <line x1="200" y1="130" x2="200" y2="150" class="start-line"/>
+
+            <circle cx="200" cy="150" r="4" class="point-dot"/>
+            <circle cx="350" cy="150" r="4" class="point-dot"/>
+            <circle cx="350" cy="300" r="4" class="point-dot"/>
+            <circle cx="200" cy="300" r="4" class="point-dot"/>
+            <text x="186" y="145" class="map-label">A</text>
+            <text x="355" y="145" class="map-label">B</text>
+            <text x="355" y="319" class="map-label">C</text>
+            <text x="186" y="319" class="map-label">D</text>
+
+            <polyline id="uavTrail" class="trail trail-uav" points=""/>
+            <polyline id="carTrail" class="trail trail-car" points=""/>
+
+            <g id="carMarker" class="marker hidden" filter="url(#markerShadow)">
+              <circle r="11" class="marker-ring car-ring"/>
+              <path d="M 14 0 L -8 -8 L -4 0 L -8 8 Z" class="car-arrow"/>
+              <text x="0" y="24" class="marker-label">小车</text>
+            </g>
+
+            <g id="uavMarker" class="marker hidden" filter="url(#markerShadow)">
+              <circle r="13" class="marker-ring uav-ring"/>
+              <line x1="-10" y1="-10" x2="10" y2="10" class="uav-arm"/>
+              <line x1="10" y1="-10" x2="-10" y2="10" class="uav-arm"/>
+              <circle cx="-10" cy="-10" r="4" class="uav-rotor"/>
+              <circle cx="10" cy="-10" r="4" class="uav-rotor"/>
+              <circle cx="-10" cy="10" r="4" class="uav-rotor"/>
+              <circle cx="10" cy="10" r="4" class="uav-rotor"/>
+              <path d="M 15 0 L 6 -4 L 7 0 L 6 4 Z" class="uav-heading"/>
+              <text x="0" y="28" class="marker-label">无人机</text>
+            </g>
+          </svg>
+
+          <div class="map-legend">
+            <span><i class="legend-dot uav-dot"></i>无人机</span>
+            <span><i class="legend-dot car-dot"></i>小车</span>
+            <span><i class="legend-line uav-line"></i>无人机轨迹</span>
+            <span><i class="legend-line car-line"></i>小车轨迹</span>
+          </div>
+        </div>
+
+        <div class="map-readouts">
+          <div><span>无人机位置</span><strong id="uavPosition">--</strong></div>
+          <div><span>小车位置</span><strong id="carPosition">--</strong></div>
+          <div><span>相对水平距离</span><strong id="relativeDistance">--</strong></div>
+          <div><span>小车关键点</span><strong id="carPoint">--</strong></div>
+        </div>
+      </article>
+
+      <article class="panel mission-strip">
+        <div class="mission-overview-head">
+          <div>
+            <span class="overview-kicker">任务概览</span>
+            <strong id="missionTask">未选择</strong>
+          </div>
+          <span id="missionLock" class="mission-lock-badge unlocked">任务未锁定</span>
+        </div>
+        <div class="mission-summary">
+          <div>
+            <span>运行编号</span>
+            <strong id="missionRun">--</strong>
+          </div>
+          <div>
+            <span>执行状态</span>
+            <strong id="missionStatus" class="mission-status-text idle">空闲</strong>
+          </div>
+          <div>
+            <span>最后事件</span>
+            <strong id="lastEvent">--</strong>
+          </div>
+          <div>
+            <span>待确认命令</span>
+            <strong id="pendingCommands">0</strong>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <aside class="side-column">
+      <article class="panel control-panel">
+        <div class="panel-title-row compact">
+          <div>
+            <h2>任务控制</h2>
+            <p>操作顺序：选择任务 → 准备双方 → 队员按小车实体按键 → 10 秒后自动启动。</p>
+          </div>
+        </div>
+
+        <div class="task-selector" role="radiogroup" aria-label="任务选择">
+          <button class="task-option active" data-task="T1">
+            <strong>任务 1</strong>
+            <span>伴飞、抛投、返回 H 点</span>
+          </button>
+          <button class="task-option" data-task="T2">
+            <strong>任务 2</strong>
+            <span>动态降落、再起飞、返回 H 点</span>
+          </button>
+        </div>
+
+        <button id="prepareBtn" class="btn btn-primary full">准备所选任务</button>
+
+        <div class="control-grid">
+          <button id="pingBtn" class="btn btn-secondary">PING 双方</button>
+          <button id="statusBtn" class="btn btn-secondary">查询状态</button>
+          <button id="startBtn" class="btn btn-success" disabled>实体按键启动（网页不可点击）</button>
+          <button id="resetBtn" class="btn btn-ghost">RESET 双方</button>
+        </div>
+
+        <div class="device-state-main">
+          <span>当前操作提示</span>
+          <strong id="missionPrompt">请选择任务并准备双方</strong>
+        </div>
+
+        <div class="emergency-wrap">
+          <div id="landSliderCard" class="land-slider-card">
+            <div class="land-slider-title">
+              <strong>安全 LAND：滑到最右端后松手</strong>
+              <small>只发送给无人机，立即中止当前任务并原地受控降落，不是停桨</small>
+            </div>
+            <div class="land-slider-row">
+              <span class="land-safe-label">安全</span>
+              <input id="landSlider" class="land-slider" type="range" min="0" max="100" value="0" step="1"
+                     aria-label="将滑块拖到最右端并松手，发送安全降落命令">
+              <span class="land-end-label">LAND</span>
+            </div>
+            <div id="landSliderHint" class="land-slider-hint">向右拖动；未到末端松手会自动复位</div>
+          </div>
+        </div>
+
+      </article>
+
+      <article class="panel device-panel uav-panel">
+        <div class="device-header">
+          <div>
+            <span id="uavLinkDot" class="link-dot offline"></span>
+            <strong>无人机 UAV</strong>
+          </div>
+          <span id="uavLinkText" class="link-text">离线</span>
+        </div>
+        <div class="device-state-main">
+          <span>实时状态</span>
+          <strong id="uavStateText">未知</strong>
+        </div>
+        <div class="data-grid">
+          <div><span>BOOT</span><strong id="uavBoot">--</strong></div>
+          <div><span>安全状态</span><strong id="uavSafety">--</strong></div>
+          <div><span>高度</span><strong id="uavAltitude">--</strong></div>
+          <div><span>航向</span><strong id="uavYaw">--</strong></div>
+          <div><span>飞行模式</span><strong id="uavMode">--</strong></div>
+          <div><span>解锁</span><strong id="uavArmed">--</strong></div>
+          <div><span>飞控连接</span><strong id="uavFcu">--</strong></div>
+          <div><span>电量</span><strong id="uavBattery">--</strong></div>
+        </div>
+      </article>
+
+      <article class="panel device-panel car-panel">
+        <div class="device-header">
+          <div>
+            <span id="carLinkDot" class="link-dot offline"></span>
+            <strong>循线小车 CAR</strong>
+          </div>
+          <span id="carLinkText" class="link-text">离线</span>
+        </div>
+        <div class="device-state-main">
+          <span>实时状态</span>
+          <strong id="carStateText">未知</strong>
+        </div>
+        <div class="data-grid">
+          <div><span>任务模式</span><strong id="carTask">--</strong></div>
+          <div><span>关键点</span><strong id="carPointCard">--</strong></div>
+          <div><span>当前区段</span><strong id="carSegment">--</strong></div>
+          <div><span>A点累计里程</span><strong id="carPath">--</strong></div>
+          <div><span>安全倒计时</span><strong id="carCountdown">--</strong></div>
+          <div><span>速度</span><strong id="carSpeed">--</strong></div>
+          <div><span>航向</span><strong id="carYaw">--</strong></div>
+          <div><span>循线</span><strong id="carLine">--</strong></div>
+          <div><span>电量</span><strong id="carBattery">--</strong></div>
+        </div>
+      </article>
+
+      <article class="panel log-panel">
+        <div class="panel-title-row compact">
+          <div>
+            <h2>通信与任务日志</h2>
+            <p id="networkSummary">GS UDP -- · UAV -- · CAR --</p>
+          </div>
+        </div>
+        <div id="logList" class="log-list">
+          <div class="empty-log">等待通信数据……</div>
+        </div>
+      </article>
+    </aside>
+  </main>
+
+  <section class="bottom-tools" aria-label="起飞前投放舵机控制">
+    <article class="panel servo-control-panel">
+      <div class="servo-control-copy">
+        <span class="overview-kicker">投掷模块 · 起飞前装载</span>
+        <h2>单路舵机控制</h2>
+        <p>仅在无人机未解锁、任务未启动时可用。ESP32 上电自动执行 A30 锁止；FSM 投放时自动执行 A90。</p>
+      </div>
+      <div class="servo-control-state">
+        <span>当前反馈</span>
+        <strong id="servoState">未知</strong>
+        <small id="servoHint">等待无人机状态；装载前确认机械结构已锁止。</small>
+      </div>
+      <div class="servo-control-actions">
+        <button id="servoLockBtn" class="btn btn-primary">锁止 A30（装载）</button>
+        <button id="servoReleaseBtn" class="btn btn-danger">释放 A90（测试）</button>
+      </div>
+    </article>
+  </section>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js?v=2.1"></script>
+</body>
+</html>

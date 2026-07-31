@@ -1,0 +1,89 @@
+# platform_vision_node.py 参数
+# 放置位置：
+#   ~/catkin_ws/src/d26_air_ground_uav/config/platform_vision.yaml
+
+# -------------------- 下视相机 --------------------
+camera_index: 0
+width: 640
+height: 480
+fps: 30
+auto_exposure: 3
+gain: 56
+disabled_read_rate_hz: 3.0
+
+# 已现场确认：
+# 图像上方 = 无人机机头方向
+# 图像左侧 = 无人机左侧
+image_center_u: 320.0
+image_center_v: 240.0
+image_down_to_body_forward_sign: -1.0
+image_right_to_body_left_sign: -1.0
+
+# -------------------- YOLOv8s TensorRT --------------------
+engine_path: /home/nvidia/models/targer/best_fp16.engine
+yolo_class_id: 0
+yolo_class_name: targer
+yolo_confidence: 0.25
+yolo_iou: 0.45
+
+# 官方大靶标边长约 0.50 m
+platform_size_m: 0.50
+yolo_cache_s: 0.30
+yolo_residual_gate_m: 0.50
+
+# -------------------- AprilTag --------------------
+tag_family: tag25h9
+tag_id: 0
+tag_size_m: 0.10
+tag_min_margin: 20.0
+tag_max_hamming: 0
+tag_confirm_frames: 3
+tag_quad_decimate: 1.0
+tag_nthreads: 2
+tag_cache_s: 0.15
+tag_hold_time_s: 0.15
+tag_fallback_time_s: 0.40
+apriltag_residual_gate_m: 0.35
+
+# 当前还没有测量 Tag 到平台中心的真实位置和方向。
+# 第一版必须保持 false，把 Tag 中心暂时近似为平台中心。
+apply_tag_offset: false
+tag_to_platform_forward_m: 0.0
+tag_to_platform_left_m: 0.0
+
+# -------------------- 不同模式的推理频率 --------------------
+# SEARCH：YOLO 主搜索，Tag 低频尝试
+search_yolo_every_n_frames: 1
+search_tag_every_n_frames: 3
+
+# TRACK：Tag 主跟踪，YOLO 降频重捕获
+track_yolo_every_n_frames: 6
+track_tag_every_n_frames: 1
+
+# PRECISION：Tag 每帧，YOLO 低频校验
+precision_yolo_every_n_frames: 10
+precision_tag_every_n_frames: 1
+
+# -------------------- UAV 位姿 / Faster-LIO --------------------
+# 当前 FSM 使用 MAVROS local pose；若改为 Faster-LIO Odometry：
+# pose_topic: /Odometry
+# pose_msg_type: odometry
+pose_topic: /mavros/local_position/pose
+pose_msg_type: pose_stamped
+pose_history_s: 2.0
+pose_sync_max_delta_s: 0.12
+
+range_topic: /mavros/distance_sensor/rangefinder_pub
+
+# -------------------- ROS 输出与调试 --------------------
+publish_rate_hz: 25.0
+status_rate_hz: 2.0
+publish_raw_results: true
+show_debug: false
+
+# 推荐由 FSM 显式发布 /uav/platform_vision_mode。
+# 若短期内 FSM 还没加该发布器，节点可通过 /uav/fsm_state 自动推导模式。
+auto_mode_from_fsm: true
+explicit_mode_timeout_s: 1.0
+
+visual_predictor_max_speed_mps: 1.0

@@ -1,0 +1,40 @@
+{
+  "network": {
+    "bind_ip": "0.0.0.0",
+    "gs_port": 8889
+  },
+  "devices": {
+    "uav": {
+      "ip": "192.168.77.103",
+      "port": 8888
+    },
+    "car": {
+      "ip": "192.168.77.102",
+      "port": 8890
+    }
+  },
+  "ui": {
+    "host": "0.0.0.0",
+    "browser_host": "127.0.0.1",
+    "port": 5001,
+    "auto_open_browser": true
+  },
+  "protocol": {
+    "command_retries": 3,
+    "command_retry_interval_ms": 300,
+    "land_retries": 5,
+    "land_retry_interval_ms": 150,
+    "servo_retries": 4,
+    "servo_retry_interval_ms": 750
+  },
+  "defaults": {
+    "devices": {
+      "uav": {
+        "ip": "192.168.77.103"
+      },
+      "car": {
+        "ip": "192.168.77.102"
+      }
+    }
+  }
+}
