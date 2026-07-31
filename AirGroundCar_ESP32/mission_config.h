@@ -75,10 +75,14 @@ constexpr float SIM_WHEEL_TIME_CONSTANT_S = 0.0f;
 // 完成一圈后，板中心进入该误差范围才允许停止位置修正。
 constexpr float ROUTE_COMPLETE_POSITION_TOLERANCE_CM = 0.5f;
 
-// 以后接实体按键时再开启并修改引脚。
-constexpr bool USE_LOCAL_START_BUTTON = false;
-// GPIO27 is currently LEFT_DIR; keep the local button disabled until reassigned.
-constexpr uint8_t LOCAL_START_PIN = 27;
+// ==================== Local start button ====================
+// Wiring: ESP32 3V3 -> momentary push button -> GPIO32.
+// GPIO32 uses the ESP32 internal pull-down, so no external 10 kOhm resistor is required.
+// Released = LOW, pressed = HIGH.
+constexpr bool USE_LOCAL_START_BUTTON = true;
+constexpr uint8_t LOCAL_START_PIN = 32;
+constexpr uint8_t LOCAL_START_ACTIVE_LEVEL = HIGH;
+constexpr uint32_t LOCAL_START_DEBOUNCE_MS = 30;
 
 extern const char* WIFI_SSID;
 extern const char* WIFI_PASSWORD;

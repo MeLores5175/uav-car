@@ -144,13 +144,39 @@ static void updateLocalStartButton()
         return;
     }
 
-    // 初版只做最简单的低电平检测，下一版再加入完整消抖。
-    static bool previousPressed = false;
-    const bool pressed = digitalRead(CarConfig::LOCAL_START_PIN) == LOW;
-    if (pressed && !previousPressed) {
-        missionManager.localStart();
+    // 3V3 -> button -> GPIO32, with the ESP32 internal pull-down enabled.
+    // Only the stable LOW-to-HIGH edge starts the mission once per press.
+    static bool lastRawPressed = false;
+    static bool stablePressed = false;
+    static uint32_t rawChangeMs = 0;
+
+    const uint32_t nowMs = millis();
+    const bool rawPressed =
+        digitalRead(CarConfig::LOCAL_START_PIN) ==
+        CarConfig::LOCAL_START_ACTIVE_LEVEL;
+
+    if (rawPressed != lastRawPressed) {
+        lastRawPressed = rawPressed;
+        rawChangeMs = nowMs;
     }
-    previousPressed = pressed;
+
+    if (nowMs - rawChangeMs < CarConfig::LOCAL_START_DEBOUNCE_MS ||
+        rawPressed == stablePressed) {
+        return;
+    }
+
+    stablePressed = rawPressed;
+    if (!stablePressed) {
+        return;
+    }
+
+    if (missionManager.localStart()) {
+        Serial.printf("[BUTTON] local start accepted on GPIO%u\n",
+                      CarConfig::LOCAL_START_PIN);
+    } else {
+        Serial.printf("[BUTTON] local start rejected, state=%u\n",
+                      (unsigned)missionManager.state());
+    }
 }
 
 static void recordArcSample(uint32_t nowMs, const WheelState& target)
@@ -182,6 +208,12 @@ void setup()
     Serial.begin(115200);
     delay(300);
 
+    // Initialize the physical start input before Wi-Fi and motor modules.
+    // Released = LOW, pressed = HIGH.
+    if (CarConfig::USE_LOCAL_START_BUTTON) {
+        pinMode(CarConfig::LOCAL_START_PIN, INPUT_PULLDOWN);
+    }
+
     missionManager.begin();
     routeController.begin();
     speedPlanner.begin();
@@ -196,10 +228,6 @@ void setup()
     telemetry.begin();
     udpComm.begin();
 
-    if (CarConfig::USE_LOCAL_START_BUTTON) {
-        pinMode(CarConfig::LOCAL_START_PIN, INPUT_PULLUP);
-    }
-
     previousMissionState = missionManager.state();
     lastControlMs = millis();
     lastTelemetryMs = lastControlMs;
@@ -211,6 +239,11 @@ void setup()
     Serial.println(CarConfig::USE_SIMULATION
         ? "backend=SIMULATION"
         : "backend=STEPPER (LEDC pulse driver)");
+    if (CarConfig::USE_LOCAL_START_BUTTON) {
+        Serial.printf(
+            "local start button: 3V3 -> button -> GPIO%u, INPUT_PULLDOWN, active HIGH\n",
+            CarConfig::LOCAL_START_PIN);
+    }
 
     if (!driveBackendReady) {
         Serial.println("[DRIVE][ERROR] backend initialization failed; motor output is disabled");
