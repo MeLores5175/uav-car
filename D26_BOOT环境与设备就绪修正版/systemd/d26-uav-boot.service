@@ -1,0 +1,29 @@
+[Unit]
+Description=D26 UAV UDP BOOT launcher
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=nvidia
+Group=nvidia
+WorkingDirectory=/home/nvidia/catkin_ws
+
+Environment=HOME=/home/nvidia
+Environment=ROS_HOME=/home/nvidia/.ros
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/usr/bin/python3 /home/nvidia/catkin_ws/src/d26_air_ground_uav/scripts/d26_boot_launcher.py
+
+Restart=always
+RestartSec=3
+
+KillSignal=SIGINT
+KillMode=control-group
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
